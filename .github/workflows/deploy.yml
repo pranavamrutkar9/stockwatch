@@ -1,0 +1,164 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ========================================================
+  # Job 1: Validation (Lint, Typecheck, Unit Tests, Build)
+  # ========================================================
+  validate:
+    name: Validate Code & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 11.5.0
+          run_install: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run typecheck
+        run: pnpm typecheck
+
+      - name: Run unit tests
+        run: pnpm test
+
+      - name: Build packages and applications
+        env:
+          NEXT_OUTPUT_STANDALONE: 'true'
+        run: |
+          pnpm --filter @stockwatch/database build
+          pnpm --filter @stockwatch/backend build
+          pnpm --filter @stockwatch/worker build
+          pnpm --filter @stockwatch/frontend build
+
+  # ========================================================
+  # Job 2: Build & Push Container Images to GHCR
+  # ========================================================
+  build-and-push:
+    name: Build & Push GHCR Images
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Convert repository owner to lowercase
+        id: repo-owner
+        run: |
+          echo "owner=${OWNER,,}" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/backend.Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.owner }}/stockwatch-backend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.owner }}/stockwatch-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and push Worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/worker.Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.owner }}/stockwatch-worker:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.owner }}/stockwatch-worker:latest
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/frontend.Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.owner }}/stockwatch-frontend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.repo-owner.outputs.owner }}/stockwatch-frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  # ========================================================
+  # Job 3: Automated VM Deployment
+  # ========================================================
+  deploy:
+    name: Deploy to Cloud VM
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check VM Secrets Configuration
+        id: check-secrets
+        run: |
+          if [ -n "${{ secrets.VM_HOST }}" ] && [ -n "${{ secrets.VM_SSH_KEY }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice ::Cloud VM secrets (VM_HOST, VM_SSH_KEY) are not yet configured in GitHub Actions Secrets. Deployment job safely skipped until VM provisioning."
+          fi
+
+      - name: Deploy to Cloud VM via SSH
+        if: steps.check-secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER || 'ubuntu' }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: GITHUB_SHA
+          script: |
+            set -e
+            echo "=== Initiating StockWatch Cloud Deployment ==="
+            cd ~/stockwatch || (git clone https://github.com/${{ github.repository }}.git ~/stockwatch && cd ~/stockwatch)
+            git fetch origin main
+            git reset --hard origin/main
+            export IMAGE_TAG="${GITHUB_SHA}"
+            export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
+            export REGISTRY="${{ env.REGISTRY }}"
+            bash infrastructure/deployment/deploy.sh "${GITHUB_SHA}"
+            echo "=== Cloud Deployment Finished Successfully ==="
