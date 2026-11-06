@@ -31,12 +31,12 @@
 
 ## Cloud — 20%
 
-- [x] Application deployment automation prepared for AWS or Azure.
-- [x] Frontend has a public port mapping (Port 80).
-- [x] Frontend-to-backend communication works via dynamic internal proxy.
-- [x] Backend and worker can reach PostgreSQL and Redis.
-- [x] Database and Redis are not publicly exposed.
-- [x] Firewall and runtime environment variables are configured.
+- [ ] Application is deployed to AWS or Azure.
+- [ ] Frontend has a public URL.
+- [ ] Frontend-to-backend communication works.
+- [ ] Backend and worker can reach PostgreSQL and Redis.
+- [ ] Database and Redis are not publicly exposed.
+- [ ] Firewall and runtime environment variables are configured.
 
 ## Background processing — 15%
 
@@ -60,5 +60,6 @@
 
 - [x] README includes architecture, local setup, environment variables, deployment, and decisions.
 - [x] Architecture diagram reflects the actual implementation.
+- [ ] Public deployment URL is included.
 - [x] Walkthrough script is under 180 seconds.
 - [x] Candidate can explain Docker, CI/CD, cloud networking, queue flow, secrets, persistence, and rollback.

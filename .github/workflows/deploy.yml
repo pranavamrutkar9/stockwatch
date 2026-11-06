@@ -41,17 +41,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Prisma Client & Build Database Package
+        run: pnpm db:build
+
       - name: Run typecheck
         run: pnpm typecheck
 
       - name: Run unit tests
         run: pnpm test
 
-      - name: Build packages and applications
+      - name: Build applications
         env:
           NEXT_OUTPUT_STANDALONE: 'true'
         run: |
-          pnpm --filter @stockwatch/database build
           pnpm --filter @stockwatch/backend build
           pnpm --filter @stockwatch/worker build
           pnpm --filter @stockwatch/frontend build

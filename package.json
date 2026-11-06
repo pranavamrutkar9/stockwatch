@@ -7,6 +7,8 @@
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
-    "lint": "pnpm --filter @stockwatch/frontend lint"
+    "lint": "pnpm --filter @stockwatch/frontend lint",
+    "db:generate": "pnpm --filter @stockwatch/database generate",
+    "db:build": "pnpm --filter @stockwatch/database build"
   }
 }
