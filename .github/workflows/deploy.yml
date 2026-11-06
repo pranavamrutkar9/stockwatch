@@ -148,7 +148,6 @@ jobs:
           echo "========================================================"
 
       - name: Deploy to Cloud VM via SSH
-        if: ${{ vars.SSH_DEPLOY_ENABLED == 'true' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
@@ -158,7 +157,10 @@ jobs:
           script: |
             set -e
             echo "=== Initiating StockWatch Cloud Deployment ==="
-            cd ~/stockwatch || (git clone https://github.com/${{ github.repository }}.git ~/stockwatch && cd ~/stockwatch)
+            if [ ! -d ~/stockwatch ]; then
+              git clone https://github.com/${{ github.repository }}.git ~/stockwatch
+            fi
+            cd ~/stockwatch
             git fetch origin main
             git reset --hard origin/main
             export IMAGE_TAG="${GITHUB_SHA}"
