@@ -1,0 +1,60 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum CheckStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model InventoryItem {
+  id          String       @id @default(uuid())
+  name        String
+  sku         String       @unique
+  category    String
+  quantity    Int
+  minQuantity Int
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  alerts      StockAlert[]
+
+  @@map("inventory_items")
+}
+
+model StockCheck {
+  id           String       @id @default(uuid())
+  jobId        String       @unique
+  status       CheckStatus  @default(PENDING)
+  totalChecked Int          @default(0)
+  lowStockCount Int         @default(0)
+  error        String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime     @default(now())
+  alerts       StockAlert[]
+
+  @@map("stock_checks")
+}
+
+model StockAlert {
+  id              String        @id @default(uuid())
+  inventoryItemId String
+  stockCheckId    String
+  quantity        Int
+  minQuantity     Int
+  message         String
+  createdAt       DateTime      @default(now())
+
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  stockCheck      StockCheck    @relation(fields: [stockCheckId], references: [id], onDelete: Cascade)
+
+  @@unique([stockCheckId, inventoryItemId])
+  @@map("stock_alerts")
+}

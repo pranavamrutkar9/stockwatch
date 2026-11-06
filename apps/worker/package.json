@@ -9,6 +9,7 @@
     "test": "jest --passWithNoTests"
   },
   "dependencies": {
+    "@stockwatch/database": "workspace:*",
     "dotenv": "^16.4.7"
   },
   "devDependencies": {
