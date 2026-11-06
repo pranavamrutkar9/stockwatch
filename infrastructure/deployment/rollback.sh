@@ -22,14 +22,15 @@ echo "Initiating StockWatch rollback procedure"
 echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 echo "========================================================"
 
-if [ ! -f "${RECORD_DIR}/.previous_tag" ]; then
-  echo "Error: No .previous_tag file found. Cannot determine rollback target tag."
-  echo "Stack status before aborting:"
+if [ ! -f "${RECORD_DIR}/.previous_tag" ] || [ ! -s "${RECORD_DIR}/.previous_tag" ]; then
+  echo "Error: Rollback unavailable. No previous deployment tag found (${RECORD_DIR}/.previous_tag is missing or empty)."
+  echo "Rollback cannot be performed because this is the first deployment or no prior verified tag exists."
+  echo "Current stack status before aborting:"
   docker compose -f "$COMPOSE_FILE" ps
   exit 1
 fi
 
-ROLLBACK_TAG=$(cat "${RECORD_DIR}/.previous_tag")
+ROLLBACK_TAG=$(cat "${RECORD_DIR}/.previous_tag" | tr -d '[:space:]')
 
 if [ -z "$ROLLBACK_TAG" ]; then
   echo "Error: Recorded previous tag is empty."

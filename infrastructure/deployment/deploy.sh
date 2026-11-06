@@ -34,10 +34,18 @@ else
 fi
 
 # 2. Record previous image tag for safe rollback
-if [ -f "${RECORD_DIR}/.current_tag" ]; then
-  PREV_TAG=$(cat "${RECORD_DIR}/.current_tag")
-  echo "$PREV_TAG" > "${RECORD_DIR}/.previous_tag"
-  echo "Recorded previous active deployment tag: ${PREV_TAG}"
+if [ -f "${RECORD_DIR}/.current_tag" ] && [ -s "${RECORD_DIR}/.current_tag" ]; then
+  PREV_TAG=$(cat "${RECORD_DIR}/.current_tag" | tr -d '[:space:]')
+  if [ -n "$PREV_TAG" ]; then
+    echo "$PREV_TAG" > "${RECORD_DIR}/.previous_tag"
+    echo "Recorded previous active deployment tag: ${PREV_TAG}"
+  else
+    echo "Notice: .current_tag is empty. No previous tag recorded."
+    rm -f "${RECORD_DIR}/.previous_tag"
+  fi
+else
+  echo "Notice: No previous deployment tag found (.current_tag does not exist). This is a first deployment."
+  rm -f "${RECORD_DIR}/.previous_tag"
 fi
 
 export IMAGE_TAG
@@ -73,13 +81,26 @@ fi
 echo "Applying Prisma database migrations..."
 DATABASE_URL="${DATABASE_URL:-postgresql://${POSTGRES_USER:-stockwatch}:${POSTGRES_PASSWORD:-stockwatch_secure_password}@postgres:5432/${POSTGRES_DB:-stockwatch}?schema=public}"
 
+PRISMA_CLI_PATH="/app/packages/database/node_modules/prisma/build/index.js"
+PRISMA_SCHEMA_PATH="/app/packages/database/prisma/schema.prisma"
+
+echo "Executing Prisma migration deploy via backend container..."
+set +e
 docker run --rm \
   --network stockwatch-network \
   -e DATABASE_URL="$DATABASE_URL" \
   "${REGISTRY}/${GITHUB_REPOSITORY_OWNER}/stockwatch-backend:${IMAGE_TAG}" \
-  node -e "const { execSync } = require('child_process'); execSync('npx prisma migrate deploy --schema=packages/database/prisma/schema.prisma', { stdio: 'inherit' });" || {
-    echo "Warning: Direct migration container failed; attempting inside backend service..."
-  }
+  node "$PRISMA_CLI_PATH" migrate deploy --schema="$PRISMA_SCHEMA_PATH"
+MIGRATION_STATUS=$?
+set -e
+
+if [ $MIGRATION_STATUS -ne 0 ]; then
+  echo "CRITICAL: Database migration failed with exit code ${MIGRATION_STATUS}!"
+  echo "Halting deployment immediately. Application services will not be deployed."
+  exit $MIGRATION_STATUS
+fi
+
+echo "Database migrations successfully applied."
 
 # 6. Deploy / update backend, worker, and frontend containers
 echo "Updating application containers..."
@@ -101,9 +122,18 @@ for i in $(seq 1 30); do
 done
 
 if [ "$HEALTHY" != "true" ]; then
-  echo "CRITICAL: Health check failed after deployment! Initiating automated rollback..."
-  "${DEPLOY_DIR}/rollback.sh"
-  exit 1
+  echo "CRITICAL: Deployment health verification failed after 60 seconds!"
+  if [ -f "${RECORD_DIR}/.previous_tag" ] && [ -s "${RECORD_DIR}/.previous_tag" ]; then
+    echo "Initiating automated rollback to previous verified release..."
+    "${DEPLOY_DIR}/rollback.sh"
+    exit 1
+  else
+    echo "First deployment detected: no previous deployment tag available to roll back to."
+    echo "Halting deployment. Stack status and recent logs:"
+    docker compose -f "$COMPOSE_FILE" ps
+    docker compose -f "$COMPOSE_FILE" logs --tail=50
+    exit 1
+  fi
 fi
 
 # 8. Record new active tag
