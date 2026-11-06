@@ -71,3 +71,4 @@ When you are ready to execute Phase 7 cloud deployment:
    curl -fsSL https://raw.githubusercontent.com/pranavamrutkar9/stockwatch/main/infrastructure/deployment/setup-vm.sh | bash
    ```
 3. **Add GitHub Secrets**: In GitHub repository settings, add `VM_HOST`, `VM_SSH_KEY`, and set variable `SSH_DEPLOY_ENABLED=true`.
+

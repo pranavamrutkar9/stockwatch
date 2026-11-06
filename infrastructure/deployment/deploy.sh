@@ -71,7 +71,7 @@ fi
 
 # 5. Apply Prisma database migrations in a controlled step
 echo "Applying Prisma database migrations..."
-DATABASE_URL="postgresql://${POSTGRES_USER:-stockwatch}:${POSTGRES_PASSWORD:-stockwatch_secure_password}@postgres:5432/${POSTGRES_DB:-stockwatch}?schema=public"
+DATABASE_URL="${DATABASE_URL:-postgresql://${POSTGRES_USER:-stockwatch}:${POSTGRES_PASSWORD:-stockwatch_secure_password}@postgres:5432/${POSTGRES_DB:-stockwatch}?schema=public}"
 
 docker run --rm \
   --network stockwatch-network \

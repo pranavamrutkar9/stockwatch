@@ -7,7 +7,7 @@ This runbook describes the automated deployment, configuration, and rollback lif
 
 ## 2. Infrastructure Specification
 
-- **Target OS**: Ubuntu 22.04 LTS / 24.04 LTS x86_64
+- **Target OS**: Ubuntu 22.04 LTS / 24.04 LTS / 26.04 LTS x86_64
 - **Recommended VM Size**:
   - AWS: `t3.small` (2 vCPU, 2 GiB RAM) or `t3.medium`
   - Azure: `Standard_B2s` (2 vCPU, 4 GiB RAM)
