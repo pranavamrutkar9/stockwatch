@@ -26,6 +26,11 @@ echo "========================================================"
 # 1. Verify environment configuration
 if [ ! -f "$ENV_FILE" ]; then
   echo "Warning: .env file not found at ${ENV_FILE}. Using existing environment variables."
+else
+  echo "Loading runtime environment configuration from ${ENV_FILE}..."
+  set -a
+  source "$ENV_FILE"
+  set +a
 fi
 
 # 2. Record previous image tag for safe rollback

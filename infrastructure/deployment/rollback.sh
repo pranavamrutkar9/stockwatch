@@ -8,7 +8,14 @@ set -e
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${DEPLOY_DIR}/../.." && pwd)"
 COMPOSE_FILE="${PROJECT_ROOT}/infrastructure/docker/docker-compose.prod.yml"
+ENV_FILE="${PROJECT_ROOT}/.env"
 RECORD_DIR="${PROJECT_ROOT}/infrastructure/deployment"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
+fi
 
 echo "========================================================"
 echo "Initiating StockWatch rollback procedure"
