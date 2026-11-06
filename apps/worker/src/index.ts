@@ -10,24 +10,39 @@ console.log('[Worker] StockWatch Background Worker process starting...');
 console.log(`[Worker] Started at: ${new Date().toISOString()}`);
 console.log(`[Worker] Process ID: ${process.pid}`);
 
+const redisUrl = process.env.REDIS_URL;
 const redisHost = process.env.REDIS_HOST || 'localhost';
 const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10);
 const redisPassword = process.env.REDIS_PASSWORD || undefined;
 
-console.log(`[Worker] Connecting to Redis at ${redisHost}:${redisPort}`);
+if (redisUrl) {
+  console.log(`[Worker] Connecting to Redis via REDIS_URL`);
+} else {
+  console.log(`[Worker] Connecting to Redis at ${redisHost}:${redisPort}`);
+}
 
-const redisConnection = new Redis({
-  host: redisHost,
-  port: redisPort,
-  password: redisPassword,
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-  retryStrategy: (times) => {
-    const delay = Math.min(times * 500, 3000);
-    console.log(`[Worker] Reconnecting to Redis in ${delay}ms (attempt ${times})...`);
-    return delay;
-  },
-});
+const redisConnection = redisUrl
+  ? new Redis(redisUrl, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+      retryStrategy: (times) => {
+        const delay = Math.min(times * 500, 3000);
+        console.log(`[Worker] Reconnecting to Redis in ${delay}ms (attempt ${times})...`);
+        return delay;
+      },
+    })
+  : new Redis({
+      host: redisHost,
+      port: redisPort,
+      password: redisPassword,
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+      retryStrategy: (times) => {
+        const delay = Math.min(times * 500, 3000);
+        console.log(`[Worker] Reconnecting to Redis in ${delay}ms (attempt ${times})...`);
+        return delay;
+      },
+    });
 
 redisConnection.on('connect', () => {
   console.log('[Worker] Connected to Redis successfully.');

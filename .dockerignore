@@ -1,0 +1,12 @@
+node_modules
+.pnpm-store
+.next
+dist
+build
+.git
+.env
+.env.local
+.vscode
+.idea
+*.log
+swc.tgz
