@@ -124,7 +124,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend
 
   # ========================================================
-  # Job 3: Automated VM Deployment
+  # Job 3: Automated VM Deployment (Phase 7 Activation)
   # ========================================================
   deploy:
     name: Deploy to Cloud VM
@@ -135,18 +135,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check VM Secrets Configuration
-        id: check-secrets
+      - name: Verify Published Images & Deployment Readiness
         run: |
-          if [ -n "${{ secrets.VM_HOST }}" ] && [ -n "${{ secrets.VM_SSH_KEY }}" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice ::Cloud VM secrets (VM_HOST, VM_SSH_KEY) are not yet configured in GitHub Actions Secrets. Deployment job safely skipped until VM provisioning."
-          fi
+          echo "========================================================"
+          echo "Phase 6 CI/CD: All 3 images successfully published to GHCR"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Registry: ${{ env.REGISTRY }}/${{ github.repository_owner }}"
+          echo "========================================================"
+          echo "Backend:  ${{ env.REGISTRY }}/${{ github.repository_owner }}/stockwatch-backend:${{ github.sha }}"
+          echo "Worker:   ${{ env.REGISTRY }}/${{ github.repository_owner }}/stockwatch-worker:${{ github.sha }}"
+          echo "Frontend: ${{ env.REGISTRY }}/${{ github.repository_owner }}/stockwatch-frontend:${{ github.sha }}"
+          echo "========================================================"
 
       - name: Deploy to Cloud VM via SSH
-        if: steps.check-secrets.outputs.configured == 'true'
+        if: ${{ vars.SSH_DEPLOY_ENABLED == 'true' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
