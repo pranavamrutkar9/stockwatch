@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@stockwatch/database": "workspace:*",
-    "dotenv": "^16.4.7"
+    "bullmq": "^5.34.0",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.2"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

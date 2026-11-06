@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { QueueService } from '../queue/queue.service';
 import { StockCheck } from '@stockwatch/database';
 import { randomUUID } from 'crypto';
 
@@ -13,27 +14,53 @@ export interface EnqueueStockCheckResult {
 
 @Injectable()
 export class StockChecksService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly queueService: QueueService,
+  ) {}
 
-  async createCheck(jobId?: string): Promise<StockCheck> {
-    const generatedJobId = jobId || `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    return this.prisma.stockCheck.create({
+  async enqueue(): Promise<EnqueueStockCheckResult> {
+    const tempJobId = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    
+    // 1. Create StockCheck record with PENDING status in PostgreSQL
+    const check = await this.prisma.stockCheck.create({
       data: {
-        jobId: generatedJobId,
+        jobId: tempJobId,
         status: 'PENDING',
       },
     });
-  }
 
-  async enqueue(): Promise<EnqueueStockCheckResult> {
-    const check = await this.createCheck();
-    return {
-      success: true,
-      id: check.id,
-      jobId: check.jobId,
-      status: check.status,
-      message: 'Stock check queued successfully',
-    };
+    try {
+      // 2. Add job to BullMQ queue
+      const bullJobId = await this.queueService.addStockCheckJob(check.id);
+
+      // 3. Update record with actual BullMQ jobId if different
+      if (bullJobId && bullJobId !== tempJobId) {
+        await this.prisma.stockCheck.update({
+          where: { id: check.id },
+          data: { jobId: bullJobId },
+        });
+      }
+
+      return {
+        success: true,
+        id: check.id,
+        jobId: bullJobId || tempJobId,
+        status: 'PENDING',
+        message: 'Stock check queued successfully',
+      };
+    } catch (err) {
+      // If queue is unreachable, record failure or fallback
+      await this.prisma.stockCheck.update({
+        where: { id: check.id },
+        data: {
+          status: 'FAILED',
+          error: `Failed to enqueue job: ${(err as Error).message}`,
+          completedAt: new Date(),
+        },
+      });
+      throw err;
+    }
   }
 
   async findAll(): Promise<StockCheck[]> {
