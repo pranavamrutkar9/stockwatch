@@ -93,29 +93,42 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 
-# Validate that DATABASE_URL targets the intended RDS database.
+# Runtime traffic uses DATABASE_URL (least-privilege stockwatch_app once provisioned).
+# Schema migrations use MIGRATION_DATABASE_URL (stockwatch_migrator) when set; otherwise
+# they fall back to DATABASE_URL for backward compatibility.
+export MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-$DATABASE_URL}"
+
+# Validate that both URLs target the intended RDS database with strict TLS.
 python3 - <<'PY'
 import os
 import sys
 from urllib.parse import urlsplit, parse_qs
 
-url = urlsplit(os.environ["DATABASE_URL"])
-params = parse_qs(url.query)
+for name in ("DATABASE_URL", "MIGRATION_DATABASE_URL"):
+    url = urlsplit(os.environ[name])
+    params = parse_qs(url.query)
 
-if url.hostname != "stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com":
-    sys.exit("ERROR: DATABASE_URL does not point to the expected RDS host.")
+    if url.hostname != "stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com":
+        sys.exit(f"ERROR: {name} does not point to the expected RDS host.")
 
-if url.port != 5432 or url.path.rstrip("/") != "/stockwatch":
-    sys.exit("ERROR: Unexpected RDS port or database name.")
+    if url.port != 5432 or url.path.rstrip("/") != "/stockwatch":
+        sys.exit(f"ERROR: Unexpected RDS port or database name in {name}.")
 
-if params.get("sslmode", [""])[0] != "require":
-    sys.exit("ERROR: sslmode=require is required.")
+    if params.get("sslmode", [""])[0] != "require":
+        sys.exit(f"ERROR: sslmode=require is required in {name}.")
 
-if params.get("sslaccept", [""])[0] != "strict":
-    sys.exit("ERROR: sslaccept=strict is required.")
+    if params.get("sslaccept", [""])[0] != "strict":
+        sys.exit(f"ERROR: sslaccept=strict is required in {name}.")
 
-if params.get("sslcert", [""])[0] != "ap-southeast-2-bundle.pem":
-    sys.exit("ERROR: Incorrect Prisma CA certificate path.")
+    if params.get("sslcert", [""])[0] != "ap-southeast-2-bundle.pem":
+        sys.exit(f"ERROR: Incorrect Prisma CA certificate path in {name}.")
+
+runtime_user = urlsplit(os.environ["DATABASE_URL"]).username
+migration_user = urlsplit(os.environ["MIGRATION_DATABASE_URL"]).username
+if runtime_user == migration_user:
+    print(f"WARNING: runtime and migrations share database user '{runtime_user}' (least-privilege split not configured).")
+else:
+    print(f"Runtime user '{runtime_user}' and migration user '{migration_user}' are separated.")
 
 print("RDS endpoint and strict TLS configuration validated.")
 PY
@@ -176,7 +189,7 @@ echo "Applying Prisma migrations to RDS..."
 docker run --rm \
   --network stockwatch-network \
   --mount "type=bind,source=${CA_HOST_PATH},target=${CA_CONTAINER_PATH},readonly" \
-  -e DATABASE_URL="$DATABASE_URL" \
+  -e DATABASE_URL="$MIGRATION_DATABASE_URL" \
   "${REGISTRY}/${GITHUB_REPOSITORY_OWNER}/stockwatch-backend:${IMAGE_TAG}" \
   node /app/packages/database/node_modules/prisma/build/index.js \
   migrate deploy \

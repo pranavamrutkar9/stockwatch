@@ -17,7 +17,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       await this.$connect();
       this.logger.log('Connected to PostgreSQL database via Prisma');
 
-      // Ensure types and tables exist individually
+      // Production schema is owned by Prisma migrations (deploy.sh runs `migrate deploy`
+      // with migration credentials). The runtime role is DML-only, so it must not run DDL.
+      // The local docker-compose.yml sets DB_BOOTSTRAP_SCHEMA=true because it has no
+      // migration step.
+      if (process.env.DB_BOOTSTRAP_SCHEMA !== 'true') {
+        await this.$queryRaw`SELECT 1 FROM "stock_checks" LIMIT 1`;
+        this.logger.log('Database reachable; schema managed by Prisma migrations');
+        return;
+      }
+
+      // Development-only: ensure types and tables exist individually
       await this.$executeRawUnsafe(`
         DO $$ BEGIN
           CREATE TYPE "CheckStatus" AS ENUM ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED');
