@@ -57,7 +57,7 @@ services:
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     volumes:
-      - /home/ubuntu/ap-southeast-2-bundle.pem:/app/packages/database/prisma/ap-southeast-2-bundle.pem:ro
+      - ${RDS_CA_BUNDLE_HOST_PATH:-/home/ubuntu/ap-southeast-2-bundle.pem}:/app/packages/database/prisma/${RDS_CA_BUNDLE_FILE:-ap-southeast-2-bundle.pem}:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -83,7 +83,7 @@ services:
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
       WORKER_SIMULATE_FAILURE: ${WORKER_SIMULATE_FAILURE:-false}
     volumes:
-      - /home/ubuntu/ap-southeast-2-bundle.pem:/app/packages/database/prisma/ap-southeast-2-bundle.pem:ro
+      - ${RDS_CA_BUNDLE_HOST_PATH:-/home/ubuntu/ap-southeast-2-bundle.pem}:/app/packages/database/prisma/${RDS_CA_BUNDLE_FILE:-ap-southeast-2-bundle.pem}:ro
     depends_on:
       redis:
         condition: service_healthy

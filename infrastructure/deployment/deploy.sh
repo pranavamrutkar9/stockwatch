@@ -56,9 +56,11 @@ on_deploy_exit() {
 }
 trap on_deploy_exit EXIT
 
-RDS_HOST="stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com"
-CA_HOST_PATH="/home/ubuntu/ap-southeast-2-bundle.pem"
-CA_CONTAINER_PATH="/app/packages/database/prisma/ap-southeast-2-bundle.pem"
+# Deployment target (region, expected RDS endpoint, regional CA bundle).
+# STOCKWATCH_TARGET=primary (default) | melbourne; see infrastructure/deployment/targets/.
+# shellcheck source=infrastructure/deployment/lib/target.sh
+source "${DEPLOY_DIR}/lib/target.sh"
+stockwatch_load_target "$DEPLOY_DIR"
 
 IMAGE_TAG="${1:-${IMAGE_TAG:-}}"
 
@@ -77,13 +79,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$CA_HOST_PATH" ]]; then
-  echo "ERROR: Regional RDS CA bundle is missing."
-  exit 1
-fi
+stockwatch_validate_target
 
 # Load runtime environment without printing secrets.
 set -a
+# shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
 
@@ -97,40 +97,8 @@ fi
 # they fall back to DATABASE_URL for backward compatibility.
 export MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-$DATABASE_URL}"
 
-# Validate that both URLs target the intended RDS database with strict TLS.
-python3 - <<'PY'
-import os
-import sys
-from urllib.parse import urlsplit, parse_qs
-
-for name in ("DATABASE_URL", "MIGRATION_DATABASE_URL"):
-    url = urlsplit(os.environ[name])
-    params = parse_qs(url.query)
-
-    if url.hostname != "stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com":
-        sys.exit(f"ERROR: {name} does not point to the expected RDS host.")
-
-    if url.port != 5432 or url.path.rstrip("/") != "/stockwatch":
-        sys.exit(f"ERROR: Unexpected RDS port or database name in {name}.")
-
-    if params.get("sslmode", [""])[0] != "require":
-        sys.exit(f"ERROR: sslmode=require is required in {name}.")
-
-    if params.get("sslaccept", [""])[0] != "strict":
-        sys.exit(f"ERROR: sslaccept=strict is required in {name}.")
-
-    if params.get("sslcert", [""])[0] != "ap-southeast-2-bundle.pem":
-        sys.exit(f"ERROR: Incorrect Prisma CA certificate path in {name}.")
-
-runtime_user = urlsplit(os.environ["DATABASE_URL"]).username
-migration_user = urlsplit(os.environ["MIGRATION_DATABASE_URL"]).username
-if runtime_user == migration_user:
-    print(f"WARNING: runtime and migrations share database user '{runtime_user}' (least-privilege split not configured).")
-else:
-    print(f"Runtime user '{runtime_user}' and migration user '{migration_user}' are separated.")
-
-print("RDS endpoint and strict TLS configuration validated.")
-PY
+# Validate that both URLs target the expected endpoint for this target with strict TLS.
+stockwatch_validate_database_urls
 
 export IMAGE_TAG
 export GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER:-pranavamrutkar9}"
@@ -142,7 +110,7 @@ echo "========================================================"
 echo "StockWatch deployment"
 echo "Image tag: ${IMAGE_TAG}"
 echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-echo "Database: verified RDS endpoint"
+echo "Target: ${STOCKWATCH_TARGET} (${STOCKWATCH_REGION})"
 echo "========================================================"
 
 # Validate Compose before changing containers.
@@ -183,11 +151,11 @@ if [[ "$REDIS_READY" != "true" ]]; then
 fi
 
 # Apply Prisma migrations to RDS using the same CA as the app.
-echo "Applying Prisma migrations to RDS..."
+echo "Applying Prisma migrations to RDS (${STOCKWATCH_REGION})..."
 
 docker run --rm \
   --network stockwatch-network \
-  --mount "type=bind,source=${CA_HOST_PATH},target=${CA_CONTAINER_PATH},readonly" \
+  --mount "type=bind,source=${RDS_CA_BUNDLE_HOST_PATH},target=${RDS_CA_CONTAINER_PATH},readonly" \
   -e DATABASE_URL="$MIGRATION_DATABASE_URL" \
   "${REGISTRY}/${GITHUB_REPOSITORY_OWNER}/stockwatch-backend:${IMAGE_TAG}" \
   node /app/packages/database/node_modules/prisma/build/index.js \

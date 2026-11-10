@@ -40,15 +40,27 @@ fi
 
 DC=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  source "$ENV_FILE"
-  set +a
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "ERROR: Runtime .env file is missing."
+  exit 1
 fi
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+# Same target resolution and database validation as deploy.sh (region, endpoint, CA bundle).
+# shellcheck source=infrastructure/deployment/lib/target.sh
+source "${DEPLOY_DIR}/lib/target.sh"
+stockwatch_load_target "$DEPLOY_DIR"
+stockwatch_validate_target
+export MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-${DATABASE_URL:-}}"
+stockwatch_validate_database_urls
 
 echo "========================================================"
 echo "Initiating StockWatch rollback procedure"
 echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+echo "Target: ${STOCKWATCH_TARGET} (${STOCKWATCH_REGION})"
 echo "========================================================"
 
 if [[ -n "${1:-}" ]]; then
@@ -89,7 +101,7 @@ echo "Restarting application stack with tag ${ROLLBACK_TAG}..."
 echo "Checking restored backend..."
 BACKEND_READY=false
 
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   HEALTH_STATUS="$(docker exec stockwatch-backend wget -qO- \
     http://127.0.0.1:4000/api/health 2>/dev/null || true)"
 
@@ -110,7 +122,7 @@ fi
 echo "Checking restored worker..."
 WORKER_READY=false
 
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   WORKER_STATUS="$(docker inspect --format '{{.State.Status}}' \
     stockwatch-worker 2>/dev/null || true)"
   WORKER_HEALTH="$(docker inspect \
@@ -149,7 +161,7 @@ fi
 echo "Checking restored frontend..."
 FRONTEND_READY=false
 
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   FRONTEND_HEALTH="$(docker inspect \
     --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
     stockwatch-frontend 2>/dev/null || true)"
