@@ -1,7 +1,7 @@
 # StockWatch — Disaster Recovery Design (Phase 3)
 
 **Status:** DESIGN — nothing in this document has been provisioned or tested unless explicitly marked VERIFIED.
-**Date:** 2026-11-10. **Author context:** produced on the primary EC2 host without AWS API access (see `docs/aws/iam-access-requirements.md`). Every AWS fact marked *(verify)* must be confirmed with read-only discovery before implementation. All costs are **unverified estimates** to be replaced with Pricing API figures.
+**Date:** 2026-11-10. **Author context:** produced on the primary EC2 host without AWS API access (see `docs/aws/iam-access-requirements.md`). Every AWS fact marked *(verify)* must be confirmed with read-only discovery before implementation. Unit prices in §9 come from the public AWS Price List offer files (publication 2026-10-29) unless marked *(unverified)*.
 
 ## 1. Current state (facts)
 
@@ -45,16 +45,40 @@ Targets are **not** claims; Phase 5 records measured values beside them.
 | How | RDS replicates snapshots + transaction logs to DR region; PITR there on demand | async physical replica in DR region; promote on failover | cron copies snapshot cross-region |
 | RPO | minutes (log shipping lag) *(measure)* | seconds (replica lag) | hours (snapshot interval) |
 | RTO | restore (~15–30 min for 20 GB) + app start | promotion (~2–5 min) + app start | restore + app start |
-| Steady cost (est.) | backup storage in DR region (~20 GB) + cross-region transfer: **~$3–6/mo** | db.t4g.micro + 20 GB gp3 in DR region + transfer: **~$18–30/mo** | storage + transfer: ~$2–5/mo |
+| Steady cost | backup storage $0.095/GB-mo in Melbourne (≤ 20 GB) + transfer: **~$1–3/mo** | db.t4g.micro $0.025/h + 20 GB × $0.138: **~$21/mo** + transfer | storage + transfer: ~$1–3/mo |
 | Failback | restore back / reverse replication | create reverse replica, planned switchover (RPO 0) | restore back |
 | Prereqs | region pair supported (`DescribeSourceRegions`), KMS key in DR region if encrypted, retention ≥ 1 | automated backups on source; KMS key in DR region if encrypted | snapshot copy permissions |
 | Complexity | low | medium (replica lifecycle, promotion breaks replication) | low, but poor RPO |
 
-**Recommendation:** **B (read replica)** for the assessment demonstration — it delivers the strongest measurable RPO/RTO and a real promotion/failback exercise, and its cost over a few days is negligible (est. < $1/day). Document **A** as the cost-optimised steady-state alternative and implement it too if approved (it is one API call and independently tests PITR in the DR region). C is rejected (RPO too weak).
+**Recommendation:** **B (read replica)** for the assessment demonstration — it delivers the strongest measurable RPO/RTO and a real promotion/failback exercise, and its cost over a few days is negligible (~$0.70/day). Document **A** as the cost-optimised steady-state alternative and implement it too if approved (it is one API call and independently tests PITR in the DR region). C is rejected (RPO too weak).
 
 In-region, independent of the choice: raise automated backup retention **1 → 7 days** (no downtime for a non-zero → non-zero change; backup storage up to the provisioned size is free) and **test PITR** to a temporary instance `stockwatch-pitr-test`, validating row counts and deterministic table hashes, then delete it.
 
-**Multi-AZ** for the primary (~2× instance cost, est. +$15–25/mo) is the correct answer for AZ failure, but it is optional for this assessment; recommended for real production.
+**Multi-AZ** for the primary (db.t4g.micro $0.051/h vs $0.025/h: **+~$22/mo** incl. storage) is the correct answer for AZ failure, but it is optional for this assessment; recommended for real production.
+
+## 4a. Melbourne (ap-southeast-4) compatibility verification
+
+Verified 2026-11-10 without AWS credentials, from AWS public sources. Items still requiring account-level API verification are listed separately and **block provisioning**.
+
+| Requirement | Result | Source |
+|---|---|---|
+| db.t4g.micro RDS for PostgreSQL offered in Melbourne | **VERIFIED** — Single-AZ $0.025/h, Multi-AZ $0.051/h (identical to Sydney) | AWS Price List `AmazonRDS/current/ap-southeast-4` |
+| gp2/gp3 RDS storage in Melbourne | **VERIFIED** — $0.138/GB-mo (both) | Price List |
+| Cross-region automated backup replication Sydney → Melbourne | **VERIFIED (docs)** — Melbourne listed as a supported destination for Asia Pacific (Sydney); "supports backup replication for all currently available versions of RDS for PostgreSQL" | RDS User Guide, *Replicating automated backups to another AWS Region* |
+| Cross-region read replicas for RDS for PostgreSQL | **VERIFIED (docs)** — "available in all Regions" for PostgreSQL 10–18 (all available versions); no PostgreSQL Region exceptions listed | RDS User Guide, *Cross-Region read replicas* |
+| Regional RDS CA bundle | **VERIFIED** — `ap-southeast-4-bundle.pem` downloaded: 3 roots (RSA2048 G1, ECC384 G1, RSA4096 G1). DR containers must mount this bundle, not the Sydney one. | `truststore.pki.rds.amazonaws.com` |
+| x86 EC2 for the DR host | **VERIFIED** — t3.small $0.0264/h; gp3 EBS $0.096/GB-mo. Images are **linux/amd64 only** (VERIFIED via `docker image inspect`; CI sets no `platforms`), so Graviton (t4g, $0.0212/h) would require multi-arch builds. | Price List `AmazonEC2/current/ap-southeast-4` |
+| **Melbourne opt-in status** | *(verify — BLOCKER)* Regions launched after 20 March 2019 are disabled by default; Melbourne (2023) is in that class. Enabling a Region is an account-level change (approval). Check: `aws ec2 describe-regions --all-regions --query "Regions[?RegionName=='ap-southeast-4'].OptInStatus"` | AWS general rule; account API |
+| PostgreSQL **16.15** minor version available in Melbourne | *(verify — BLOCKER for replica)* A cross-region replica must run a version available in the destination. `aws rds describe-db-engine-versions --engine postgres --engine-version 16.15 --region ap-southeast-4` | account API |
+| Source encryption / KMS | *(verify — BLOCKER)* If `StorageEncrypted=true`, a KMS key **in Melbourne** must be specified for the replica / replicated backups (and `PreSignedUrl` when using the raw API). An unencrypted source yields an unencrypted replica. | RDS docs; `DescribeDBInstances` |
+| Default retention ≥ 1 day on source | *(verify)* required for replicas and backup replication; last seen 1 day | `DescribeDBInstances` |
+| Route 53 health-checker reachability | *(verify)* SG/NACL must allow health-checker ranges on port 80 | `DescribeSecurityGroupRules` |
+
+Documented constraints that shape automation:
+- Deleting the source of a PostgreSQL cross-region replica sets the replica to **terminated, not promoted** — promotion must always be explicit (`dr-failover.sh`).
+- Cross-region replication data transfer is charged; current dataset is tiny (5/6/7 rows in the three tables), so transfer cost is negligible.
+- The replica is created with the **default security group** unless one is specified — Terraform/automation must pass the DR DB security group explicitly.
+- Account limits: ≤ 5 cross-region replicas guaranteed per source; 20 cross-region automated backups per account by default.
 
 ## 5. Redis recovery design
 
@@ -82,7 +106,7 @@ In-region, independent of the choice: raise automated backup retention **1 → 7
   worker ⇄ Redis (AOF)                       worker ⇄ Redis (empty + reconciliation)
 ```
 
-\* **DR region:** ap-southeast-4 (Melbourne) preferred — same jurisdiction for data residency, low latency; **verify** RDS cross-region support and instance availability. Fallback: ap-southeast-1 (Singapore).
+\* **DR region: ap-southeast-4 (Melbourne) — selected.** Same jurisdiction for data residency, low latency to Sydney. RDS cross-region support and instance/price availability verified from public sources (§4a); opt-in status, engine minor version and KMS remain to be verified via API.
 
 - **Health check:** HTTP `GET http://<primary>/api/health` (port 80 → frontend → backend → DB + Redis), i.e. an end-to-end check. Interval 30 s, failure threshold 3 → detection ≈ 90 s; + TTL 60 s. The primary security group must allow the Route 53 health-checker ranges on port 80 (it is currently open to the world *(verify)*).
 - **Stable addresses:** Elastic IPs for primary and secondary *(approval; attaching an EIP to the primary changes its public IP)*.
@@ -98,7 +122,7 @@ infrastructure/terraform/
   modules/
     network/            # VPC, public subnet(s), private DB subnets (2 AZs), IGW, routes
     security/           # app SG (80 from world/health checkers, no 22 — use SSM), db SG (5432 from app SG only)
-    app_host/           # EC2, IAM instance profile, EIP, user-data: Docker + compose + pinned image SHA
+    app_host/           # EC2 (x86: images are amd64-only), IAM instance profile, EIP, user-data: Docker + compose + pinned image SHA + ap-southeast-4 CA bundle
     database_dr/        # mode = "replica" | "pitr_restore" | "none"; KMS key; subnet/parameter groups
     dns_failover/       # health checks + PRIMARY/SECONDARY failover records
   envs/
@@ -123,20 +147,26 @@ Scripts in `infrastructure/deployment/dr/` (bash, `set -Eeuo pipefail`, lock fil
 | `dr-failback.sh` | create replica of promoted DB back in primary region → wait lag ≈ 0 → maintenance: stop DR writers → promote primary-region replica → repoint primary `.env` → deploy → restore primary health check → DNS returns → rebuild DR replica |
 | `db-consistency-check.sh` | per-table row counts + deterministic ordered-row hashes, compared between two endpoints |
 
-## 9. Cost summary (estimates, unverified)
+## 9. Cost summary (Melbourne DR)
 
-| Item | Monthly (steady) | During assessment window |
-|---|---|---|
-| Backup retention 7 days (≤ 20 GB) | ~$0 | ~$0 |
-| PITR test instance (temporary) | — | < $0.10/hour while running |
-| Option B read replica (DR region) | ~$18–30 | < $1/day |
-| Option A backup replication | ~$3–6 | negligible |
-| DR EC2 (t3/t4g.small, running) / stopped | ~$15–20 / ~$2 EBS | < $1/day |
-| Elastic IPs (2 × public IPv4) | ~$7 | negligible |
-| Route 53 zone + 2 health checks | ~$1.50–2.50 | negligible |
-| S3 (state + Redis backups) | < $1 | negligible |
-| **Warm standby total (B + running DR EC2)** | **~$45–60** | |
-| **Pilot light total (A + no DR EC2)** | **~$10–15** | |
+Unit prices from the AWS Price List (2026-10-29) unless marked *(unverified)*; monthly = 730 h. Excludes tax and free-tier effects.
+
+| Item | Unit price | Monthly (steady) | Per day |
+|---|---|---|---|
+| Backup retention 1 → 7 days (Sydney) | free up to provisioned storage | ~$0 | ~$0 |
+| PITR test instance (temporary, Sydney) | $0.025/h + storage | — | < $0.70 while running |
+| Option B read replica, db.t4g.micro + 20 GB | $0.025/h + $0.138/GB-mo | **$21.01** | $0.69 |
+| Option A backup replication (≤ 20 GB) | $0.095/GB-mo + snapshot copy transfer | **$1–3** | negligible |
+| DR EC2 t3.small (x86) running | $0.0264/h | **$19.27** | $0.63 |
+| DR EBS 20 GB gp3 | $0.096/GB-mo | $1.92 | $0.06 |
+| Elastic IPs ×2 | $0.005/h each *(unverified — AmazonVPC price list not checked)* | $7.30 | $0.24 |
+| Route 53 zone + 2 health checks | $0.50 zone (verified); $0.50/check for AWS endpoints *(unverified)*, $0.75 non-AWS (verified) | $1.50–2.00 | negligible |
+| S3 state + Redis backups | *(unverified)* | < $1 | negligible |
+| Primary Multi-AZ (optional) | $0.051/h vs $0.025/h + storage | +$21.74 | +$0.71 |
+| **Warm standby (B + DR EC2 running + EIPs + R53 + S3)** | | **≈ $52/mo** | **≈ $1.70/day** |
+| **Pilot light (A + primary EIP + R53 + S3, DR EC2 only during tests)** | | **≈ $7–9/mo** | |
+
+A three-day assessment window with full warm standby costs ≈ $5.
 
 ## 10. Approvals required (none requested to execute yet)
 
@@ -148,7 +178,7 @@ Scripts in `infrastructure/deployment/dr/` (bash, `set -Eeuo pipefail`, lock fil
 | 4 | Create `stockwatch_app` DB role and switch app to it | DB DDL on production + container recreate |
 | 5 | Code fix: `jobId = stockCheck.id` + reconciliation | via normal PR/deploy |
 | 6 | PITR test instance (create, validate, delete) | small hourly cost |
-| 7 | DR region choice + cross-region replica (B) and/or backup replication (A) | see §9 |
+| 7 | Enable Melbourne Region if opt-in is required; cross-region replica (B) and/or backup replication (A); KMS key in Melbourne if source is encrypted | see §9 |
 | 8 | Terraform state bucket + DR environment apply/destroy | see §9 |
 | 9 | Elastic IP for primary (changes public IP) | brief reachability change |
 | 10 | Route 53 hosted zone, health checks, failover records; domain decision | ~$2/mo |

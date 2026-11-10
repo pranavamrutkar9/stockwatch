@@ -76,3 +76,31 @@ Evidence (isolated network `sw-phase1-test`, throwaway Redis, compiled code from
 - **IAM:** `docs/aws/iam-readonly-discovery-policy.json`, `docs/aws/ec2-trust-policy.json`, `docs/aws/iam-access-requirements.md` — PREPARED. IMDS confirms no instance role (404).
 - **DR design:** `docs/disaster-recovery-design.md` — DESIGN only; AWS facts marked *(verify)*; costs are unverified estimates.
 - Housekeeping pending approval: two anonymous Docker volumes created by my isolated test Redis containers at 19:35:17 and 19:35:58 UTC (`7e6c2778b28a…`, `c5ff5e059b71…`, label `com.docker.volume.anonymous`). Pre-existing anonymous volume `63f11b1a…` (15:58 UTC) is NOT mine and must be preserved.
+
+## 2026-11-10 19:54–19:57 UTC — Production recovery EXECUTED (approved Steps 0–4, 6, read-only 5)
+
+Pushed `3691918`, `b49d0e2` to `origin/fix/rds-deployment-hardening` (fast-forward from `1264b3a`); `origin/main` unchanged at `1cc73a2`.
+
+| Time (UTC) | Step | Result |
+|---|---|---|
+| 19:54:34 | 0 pre-flight | git clean; `.current_tag`=1cc73a2; compose valid; queue wait=0 active=0, id=6, dbsize=11; BGSAVE completed |
+| 19:54:52 | 0 backup verification | `redis-data-pre.tgz`: 4/4 files sha256-identical to live volume; restore into network-less throwaway Redis → dbsize 11, id 6, completed 6, key set identical to live |
+| 19:55:06 | 1 `CONFIG SET requirepass` | `OK` |
+| 19:55:06 | 2 auth | new pw `PONG`; old pw `NOAUTH WRONGPASS`; 4 clients kept; backend still `redis: connected` |
+| 19:55:19 → 19:55:35 | 3 recreate backend+worker (`--no-deps`, tag 1cc73a2) | Redis untouched (same StartedAt); backend **healthy in 16 s**; same image IDs (404bc5…, 3ac750…) |
+| 19:55:40 | 4 frontend | **healthy at first observation without recreation**; port 80 `/api/health` 200 |
+| 19:55:51 | 6a | queue idle; 10 persistent keys; `BGREWRITEAOF` ok; `redis-data-pre6.tgz` restore-tested (key set identical, id 6) |
+| 19:56:10 → 19:56:15 | 6b recreate Redis | **healthy in 5 s**; loaded from AOF (base RDB 11 keys + incr) |
+| 19:56:15 | 6c | persistent keys identical (10); job id 6 → 6; container-env password now PONG; fixed healthcheck active; worker reconnected after one 500 ms retry |
+| 19:56:34 | 5 read-only validation | health `ok` (database+redis connected); inventory 200, 5 items (4 HEALTHY, 1 LOW_STOCK); stock-checks 6 (all COMPLETED); alerts 7; frontend `/` 200; queue wait/active/delayed/failed = 0, completed 6 |
+| 19:56:49 | 5 worker | read-only `SELECT 1` with worker's own credentials: OK (`stockwatch_admin`, ssl=true); worker env DB/Redis hashes match `.env`; log secret scan 0/0/0 for all four containers; volume list unchanged |
+| 19:57:05 | housekeeping | removed only own test volumes `7e6c2778b28a…`, `c5ff5e059b71…` after checks (anonymous label, 19:35 creation, unused, 8 KB `dump.rdb`); `63f11b1a…`, `stockwatch_postgres_data`, `stockwatch_redis_data` preserved |
+
+Downtime: API unavailable ~16 s during Step 3 (it was already failing all DB requests since ~17:12); Redis unavailable ~5 s in Step 6 (health 503 window; no submissions occurred). No unexpected behaviour. Evidence directory on host: `~/stockwatch-recovery/20261110T195434Z/` (mode 700, not in repo; contains Redis data tarballs).
+
+Not yet proven: a stock-check job processed end-to-end on the recovered stack (Step 5b not approved). Running images are still `1cc73a2` (without `1264b3a`/`3691918`).
+
+## 2026-11-10 — Melbourne verification and IAM review
+
+- Melbourne (ap-southeast-4) selected. Verified from public AWS sources: db.t4g.micro PostgreSQL offered (same price as Sydney), Sydney→Melbourne automated backup replication supported, cross-region PG replicas supported, regional CA bundle exists. Images are amd64-only → x86 DR host. Blockers needing API: Region opt-in status, PG 16.15 availability, source encryption/KMS. See design §4a/§9.
+- `docs/aws/iam-policy-review.md`: per-action review of 78 Allow + 13 Deny actions (13 Optional actions identified for further tightening).
