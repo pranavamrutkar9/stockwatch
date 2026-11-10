@@ -107,6 +107,102 @@ describeIntegration('Worker delivery semantics (real Redis + PostgreSQL)', () =>
     expect(await prisma.stockAlert.count({ where: { stockCheckId: check.id } })).toBe(2);
   });
 
+  /**
+   * Deterministic interleavings (no timing assumptions). A competing delivery's
+   * transaction is held open at a chosen point; the test proves the processor
+   * is actually blocked on a row lock (pg_stat_activity wait_event_type = 'Lock')
+   * before releasing the competitor.
+   */
+  async function heldTransaction(work: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<void>) {
+    let release!: () => void;
+    let ready!: () => void;
+    const isReady = new Promise<void>((r) => (ready = r));
+    const done = prisma.$transaction(
+      async (tx) => {
+        await work(tx);
+        ready();
+        await new Promise<void>((r) => (release = r));
+      },
+      { timeout: 30_000, maxWait: 10_000 },
+    );
+    await isReady;
+    return { release: () => release(), done };
+  }
+
+  const blockedOnLock = () =>
+    waitFor(async () => {
+      const rows = await prisma.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`;
+      return Number(rows[0].n) > 0;
+    }, 10_000);
+
+  const lowItems = async () => (await prisma.inventoryItem.findMany()).filter((i) => i.quantity <= i.minQuantity);
+
+  it('forced interleaving A: competing transaction holds uncommitted alert rows -> delivery blocks, then completes without error or duplicates', async () => {
+    const check = await newCheck();
+    const items = await lowItems();
+    const competitor = await heldTransaction(async (tx) => {
+      await tx.stockAlert.createMany({
+        data: items.map((i) => ({ stockCheckId: check.id, inventoryItemId: i.id, quantity: i.quantity, minQuantity: i.minQuantity, message: 'competitor' })),
+      });
+    });
+
+    const delivery = processStockCheckJob(fakeJob(check.id), { simulateFailure: false });
+    await blockedOnLock(); // the processor is waiting on the unique index entries held by the competitor
+    competitor.release();
+    await competitor.done;
+
+    const result = await delivery;
+    expect(result).toMatchObject({ status: 'COMPLETED', lowStockCount: 2 });
+    expect(await prisma.stockAlert.count({ where: { stockCheckId: check.id } })).toBe(2);
+  });
+
+  it('control for A: the previous per-row Prisma upsert also survives this interleaving (native ON CONFLICT DO UPDATE) - the old alert path was not racy', async () => {
+    const check = await newCheck();
+    const [item] = await lowItems();
+    const competitor = await heldTransaction(async (tx) => {
+      await tx.stockAlert.create({
+        data: { stockCheckId: check.id, inventoryItemId: item.id, quantity: item.quantity, minQuantity: item.minQuantity, message: 'competitor' },
+      });
+    });
+    const legacyUpsert = prisma.stockAlert
+      .upsert({
+        where: { stockCheckId_inventoryItemId: { stockCheckId: check.id, inventoryItemId: item.id } },
+        create: { stockCheckId: check.id, inventoryItemId: item.id, quantity: item.quantity, minQuantity: item.minQuantity, message: 'legacy' },
+        update: { message: 'legacy' },
+      })
+      .then(() => 'ok', (e: { code?: string }) => `error ${e.code ?? 'unknown'}`);
+    await blockedOnLock();
+    competitor.release();
+    await competitor.done;
+    // Finding (2026-11-10): Prisma 6 executes this compound-unique upsert as a native
+    // INSERT ... ON CONFLICT DO UPDATE, so it does not raise P2002 under contention.
+    expect(await legacyUpsert).toBe('ok');
+  });
+
+  it('forced interleaving B: competing delivery holds an uncommitted COMPLETED transition -> claim blocks, then skips without recomputing', async () => {
+    const check = await newCheck();
+    const competitorCompletedAt = new Date('2026-01-01T00:00:00Z');
+    const competitor = await heldTransaction(async (tx) => {
+      await tx.stockCheck.update({
+        where: { id: check.id },
+        data: { status: 'COMPLETED', totalChecked: 3, lowStockCount: 2, completedAt: competitorCompletedAt },
+      });
+    });
+
+    // findUnique sees the committed PENDING state, so the processor proceeds to its claim and blocks there.
+    const delivery = processStockCheckJob(fakeJob(check.id), { simulateFailure: false });
+    await blockedOnLock();
+    competitor.release();
+    await competitor.done;
+
+    const result = await delivery;
+    expect(result.status).toBe('COMPLETED');
+    expect(result.completedAt?.toISOString()).toBe(competitorCompletedAt.toISOString()); // not overwritten
+    expect(await prisma.stockAlert.count({ where: { stockCheckId: check.id } })).toBe(0); // no recompute
+  });
+
   it('redelivery after completion is a no-op even if inventory changed since', async () => {
     const check = await newCheck();
     const first = await processStockCheckJob(fakeJob(check.id), { simulateFailure: false });
