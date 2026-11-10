@@ -40,7 +40,27 @@ Guards in `roles.sql`: refuses to continue if either role has `SUPERUSER/REPLICA
 
 The first harness run caught a real defect that would also have failed on RDS: `ALTER ROLE … NOSUPERUSER NOREPLICATION NOBYPASSRLS` is rejected for a non-superuser admin. Fixed by verifying (not setting) those attributes.
 
-Not verified: behaviour on the actual RDS engine (RDS master is a member of `rds_superuser`; expected to behave as the emulated `CREATEROLE` owner, but only a production dry run proves it).
+Not verified: the plan executed on the actual RDS engine. Catalog facts above match the emulation; a production `db-roles.sh` dry run (rolled back) is the remaining proof and requires approval.
+
+## Production plan validation (2026-11-10, read-only against production)
+
+`scripts/rehearse-db-roles-on-copy.sh` (source session forced `default_transaction_read_only=on`; dump in a private temp dir, deleted on exit) — **19 passed, 0 failed**.
+
+Live RDS catalog facts (read-only `SELECT`s):
+
+| Fact | Value | Plan implication |
+|---|---|---|
+| Engine | PostgreSQL 16.15 | PG16 `GRANT … WITH INHERIT FALSE, SET TRUE` supported |
+| `stockwatch_admin` | `super=f createrole=t createdb=t`, member of `rds_superuser` | matches the emulated admin in the harness |
+| `password_encryption` | `scram-sha-256` | SCRAM verifiers accepted |
+| Existing `stockwatch_*` roles | none | roles will be created |
+| Object / enum owners | `stockwatch_admin` | `--transfer-ownership` required (guard verified) |
+| Database ACL | default (PUBLIC has CONNECT/TEMP) | `REVOKE ALL … FROM PUBLIC` changes this |
+| `max_connections` | 79 | app limit 30 + migrator 5 fits |
+| Applied migrations | `20261106000000_init` | migrator: `migrate status` up to date, `migrate deploy` permitted |
+| Data | inventory 5, stock_checks 6, stock_alerts 7 | identical row counts + content hashes before/after the role change on the copy |
+
+**Operational consequence (verified):** after the ownership transfer the master user has no implicit table access (its membership in `stockwatch_migrator` is `INHERIT FALSE`). Break-glass reads/writes require `SET ROLE stockwatch_migrator;` first. This is intentional (no silent superuser-style access) and must be in the runbook.
 
 ## Production rollout plan (each step requires approval)
 
