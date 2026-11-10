@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars (gitignored). Never put secrets here.
+allowed_account_ids = ["<ACCOUNT_ID>"]
+
+# Zero-cost default: only VPC/subnets/IGW/route tables/security groups/DB subnet+parameter groups.
+allow_billable  = false
+create_app_host = false
+db_mode         = "none"
+
+# For a DR exercise (requires approval and cost acceptance):
+# allow_billable  = true
+# create_app_host = true
+# db_mode         = "replica"
+# source_db_arn   = "arn:aws:rds:ap-southeast-2:<ACCOUNT_ID>:db:stockwatch-primary-db"
+# kms_key_arn     = "arn:aws:kms:ap-southeast-4:<ACCOUNT_ID>:key/<id>"   # only if the source is encrypted
+# git_commit      = "<40-char commit SHA>"

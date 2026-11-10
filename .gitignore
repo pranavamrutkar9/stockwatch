@@ -49,3 +49,13 @@ infrastructure/deployment/.*.tmp
 infrastructure/deployment/*.pre-auto-rollback
 infrastructure/deployment/*.pre-hardening
 infrastructure/docker/*.save
+
+# Terraform: never commit state, plans, local variable files or provider caches
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+terraform.tfvars
+*.auto.tfvars
