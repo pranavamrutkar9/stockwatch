@@ -117,3 +117,20 @@ All work below is **implemented and tested on isolated infrastructure only**. No
 - **Defects found by the harness and fixed:** `ALTER ROLE … NOSUPERUSER …` rejected for non-superuser admins (would have failed on RDS); harness false-pass due to missing `pipefail`; jest hang on open handles after failures (`--forceExit` + timeout).
 - **IAM v1.0:** 65 Allow (13 optional removed) + 13 Deny; trust-policy review, approval checklist and verify/detach procedure in `docs/aws/iam-policy-review.md`. Not created or attached.
 - **Melbourne:** verified from public price lists — Sydney→Melbourne transfer $0.080/GB, public IPv4 $0.005/h; 31 Route 53 health-checker prefixes. Specification and runbooks: `docs/dr-melbourne-environment.md`.
+
+## 2026-11-10 21:00–22:10 UTC — Zero-cost DR implementation (Phases 1, 4, 5; Phases 2/3 partially blocked)
+
+Constraint: **zero additional AWS spend**. No AWS resource was created or modified; no AWS API was called with credentials (none exist on the host). Production containers, credentials and data unchanged (verified healthy throughout).
+
+**Phase 1 (repository):** `26c8ff6`, `b929c25`, `41a3391` pushed. Deterministic interleaving tests (`2bcf2c6`): competing transactions held open, processor proven blocked via `pg_stat_activity` before release. **Correction:** Prisma 6 executes the alert upsert as native `INSERT … ON CONFLICT DO UPDATE`, so the previously suspected P2002 alert race did not exist; the real concurrency defect was the unconditional status overwrite (interleaving B — fails on the old processor). `deploy.sh` shebang fixed (`72b1e15`; blank first line since `1264b3a`).
+
+**Phase 2 (IAM):** BLOCKED on role attachment (IMDS `iam/info` 404). AWS CLI v2.40.0 installed user-local after GPG verification (key FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C); fails safely without credentials.
+
+**Phase 3 (DNS):** DNS-level discovery only — `stockwatch-hz.` resolves from the primary VPC with Route 53 private-zone placeholder NS; no common app records. Analysis and zero-cost demonstration plan: `docs/dns-route53-analysis.md`. Route 53 price list: first 50 health checks of AWS endpoints are free.
+
+**Phase 4:**
+- `4a77895` deploy/rollback parameterised by target profile (region, endpoint, regional CA); compose config hashes proven identical for production; 26 behavioural tests (stub docker).
+- `08f29e1` role-migration rehearsal on a **read-only copy of production**: 19/19 (PG 16.15, admin non-superuser CREATEROLE in `rds_superuser`, `max_connections` 79, data hashes unchanged; master user needs `SET ROLE stockwatch_migrator` for break-glass after transfer).
+- `096bf9e` Terraform (Melbourne): zero-cost default + `cost_guard`; 15 offline tests with `mock_provider`; validate 0 errors/0 warnings. Terraform 1.17.1 installed after HashiCorp GPG + SHA256 verification. **Not planned/applied against AWS.**
+- `4ae8608` failover/failback automation (dry-run default, date-bound confirmation, billable gate, primary-host guard); 25 tests with stub aws CLI; found a repo-root path bug that would have aborted a real failover after the irreversible promotion.
+- `bf7bc6a` backup/restore automation; 16 isolated tests; **verified backup of production created read-only** (`~/stockwatch-backups/postgres/20261110T215542Z`, inventory 5 / alerts 7 / checks 6, hashes match).
