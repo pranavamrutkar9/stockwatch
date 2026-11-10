@@ -75,9 +75,27 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Enqueues a stock check using the StockCheck ID as the BullMQ job ID.
+   *
+   * - Job IDs no longer depend on Redis' auto-increment counter, so they cannot
+   *   collide with `stock_checks.jobId` (UNIQUE) after Redis is restored or
+   *   replaced.
+   * - Adding a job whose ID already exists in Redis is a no-op in BullMQ, so
+   *   concurrent or repeated enqueue/recovery calls create at most one job.
+   */
   async addStockCheckJob(stockCheckId: string): Promise<string> {
-    const job = await this.stockCheckQueue.add('process-check', { stockCheckId });
-    this.logger.log(`Queued stock check job "${job.id}" for record "${stockCheckId}"`);
+    const job = await this.stockCheckQueue.add('process-check', { stockCheckId }, { jobId: stockCheckId });
+    this.logger.log(`Queued stock check job "${job.id}"`);
     return job.id as string;
+  }
+
+  /** Current BullMQ state of a stock check's job, or null if Redis has no such job. */
+  async getStockCheckJobState(stockCheckId: string): Promise<{ state: string; failedReason?: string } | null> {
+    const job = await this.stockCheckQueue.getJob(stockCheckId);
+    if (!job) return null;
+    const state = await job.getState();
+    if (state === 'unknown') return null;
+    return { state, failedReason: job.failedReason || undefined };
   }
 }

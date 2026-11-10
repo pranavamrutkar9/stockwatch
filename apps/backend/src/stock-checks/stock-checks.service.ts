@@ -20,39 +20,31 @@ export class StockChecksService {
   ) {}
 
   async enqueue(): Promise<EnqueueStockCheckResult> {
-    const tempJobId = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    
-    // 1. Create StockCheck record with PENDING status in PostgreSQL
-    const check = await this.prisma.stockCheck.create({
-      data: {
-        jobId: tempJobId,
-        status: 'PENDING',
-      },
+    // The record ID doubles as the BullMQ job ID (see QueueService.addStockCheckJob),
+    // so the persisted jobId is known before enqueueing and never needs rewriting.
+    const id = randomUUID();
+
+    // 1. Persist the PENDING record first: PostgreSQL is the source of truth, and
+    //    StockCheckRecoveryService re-enqueues PENDING records if Redis loses the job.
+    await this.prisma.stockCheck.create({
+      data: { id, jobId: id, status: 'PENDING' },
     });
 
     try {
-      // 2. Add job to BullMQ queue
-      const bullJobId = await this.queueService.addStockCheckJob(check.id);
-
-      // 3. Update record with actual BullMQ jobId if different
-      if (bullJobId && bullJobId !== tempJobId) {
-        await this.prisma.stockCheck.update({
-          where: { id: check.id },
-          data: { jobId: bullJobId },
-        });
-      }
+      // 2. Enqueue (idempotent per job ID).
+      const jobId = await this.queueService.addStockCheckJob(id);
 
       return {
         success: true,
-        id: check.id,
-        jobId: bullJobId || tempJobId,
+        id,
+        jobId,
         status: 'PENDING',
         message: 'Stock check queued successfully',
       };
     } catch (err) {
-      // If queue is unreachable, record failure or fallback
+      // Queue unreachable: record a terminal failure so the client stops polling.
       await this.prisma.stockCheck.update({
-        where: { id: check.id },
+        where: { id },
         data: {
           status: 'FAILED',
           error: `Failed to enqueue job: ${(err as Error).message}`,
