@@ -169,11 +169,11 @@ fi
 
 # 6. Update verified release state only after all checks pass.
 if [[ -n "$CURRENT_TAG" && "$CURRENT_TAG" != "$ROLLBACK_TAG" ]]; then
-  printf '%s\\n' "$CURRENT_TAG" > "${RECORD_DIR}/.previous_tag.tmp"
+  printf '%s\n' "$CURRENT_TAG" > "${RECORD_DIR}/.previous_tag.tmp"
   mv "${RECORD_DIR}/.previous_tag.tmp" "${RECORD_DIR}/.previous_tag"
 fi
 
-printf '%s\\n' "$ROLLBACK_TAG" > "${RECORD_DIR}/.current_tag.tmp"
+printf '%s\n' "$ROLLBACK_TAG" > "${RECORD_DIR}/.current_tag.tmp"
 mv "${RECORD_DIR}/.current_tag.tmp" "${RECORD_DIR}/.current_tag"
 
 echo "========================================================"

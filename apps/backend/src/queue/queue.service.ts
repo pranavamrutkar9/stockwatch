@@ -1,10 +1,12 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
+import { DEPENDENCY_CHECK_TIMEOUT_MS, DependencyHealthLog, withTimeout } from '../health/dependency-check';
 
 @Injectable()
 export class QueueService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(QueueService.name);
+  private readonly healthLog = new DependencyHealthLog('Redis', this.logger);
   private stockCheckQueue!: Queue;
   private redisConnection!: Redis;
 
@@ -55,12 +57,20 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     this.logger.log('Queue and Redis connections closed');
   }
 
+  /**
+   * Readiness probe. The shared connection uses `maxRetriesPerRequest: null`
+   * (required by BullMQ), so a PING issued while Redis is down would wait
+   * indefinitely; the timeout keeps /api/health responsive.
+   */
   async isHealthy(): Promise<boolean> {
     try {
-      if (!this.redisConnection) return false;
-      const pong = await this.redisConnection.ping();
-      return pong === 'PONG';
-    } catch {
+      if (!this.redisConnection) throw new Error('Redis connection not initialized');
+      const pong = await withTimeout(this.redisConnection.ping(), DEPENDENCY_CHECK_TIMEOUT_MS, 'Redis PING');
+      if (pong !== 'PONG') throw new Error(`Unexpected Redis PING response: ${pong}`);
+      this.healthLog.success();
+      return true;
+    } catch (err) {
+      this.healthLog.failure(err);
       return false;
     }
   }

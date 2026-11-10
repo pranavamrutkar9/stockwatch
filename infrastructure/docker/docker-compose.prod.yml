@@ -37,7 +37,9 @@ services:
     networks:
       - stockwatch-network
     healthcheck:
-      test: ["CMD-SHELL", "if [ -n \"$$REDIS_PASSWORD\" ]; then redis-cli -a \"$$REDIS_PASSWORD\" ping; else redis-cli ping; fi"]
+      # redis-cli exits 0 even on NOAUTH/WRONGPASS, so require an explicit PONG.
+      # REDISCLI_AUTH keeps the password out of the process list.
+      test: ["CMD-SHELL", "if [ -n \"$$REDIS_PASSWORD\" ]; then export REDISCLI_AUTH=\"$$REDIS_PASSWORD\"; fi; redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5

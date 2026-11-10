@@ -11,8 +11,11 @@ export class HealthController {
 
   @Get()
   async check() {
-    const isDbHealthy = await this.prisma.isHealthy();
-    const isRedisHealthy = await this.queueService.isHealthy();
+    // Probe both dependencies concurrently so worst-case latency is one timeout, not two.
+    const [isDbHealthy, isRedisHealthy] = await Promise.all([
+      this.prisma.isHealthy(),
+      this.queueService.isHealthy(),
+    ]);
 
     const allHealthy = isDbHealthy && isRedisHealthy;
 

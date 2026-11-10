@@ -1,9 +1,16 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { PrismaClient } from '@stockwatch/database';
+import {
+  DEPENDENCY_CHECK_TIMEOUT_MS,
+  DependencyHealthLog,
+  describeDependencyError,
+  withTimeout,
+} from '../health/dependency-check';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  private readonly healthLog = new DependencyHealthLog('Database', this.logger);
 
   async onModuleInit() {
     try {
@@ -61,7 +68,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
       this.logger.log('Database schema verified and active');
     } catch (err) {
-      this.logger.warn(`Database connection check: ${(err as Error).message}`);
+      this.logger.warn(`Database connection check failed: ${describeDependencyError(err)}`);
     }
   }
 
@@ -70,11 +77,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     this.logger.log('Disconnected from PostgreSQL database');
   }
 
+  /**
+   * Readiness probe: opens/uses a pooled connection and runs `SELECT 1`.
+   * Failures (e.g. P1000 authentication failed, P1001 unreachable, TLS errors)
+   * are logged server-side in sanitized form; callers only receive a boolean.
+   */
   async isHealthy(): Promise<boolean> {
     try {
-      await this.$queryRaw`SELECT 1`;
+      await withTimeout(this.$queryRaw`SELECT 1`, DEPENDENCY_CHECK_TIMEOUT_MS, 'Database SELECT 1');
+      this.healthLog.success();
       return true;
-    } catch {
+    } catch (err) {
+      this.healthLog.failure(err);
       return false;
     }
   }

@@ -9,10 +9,14 @@ dotenv.config();
 
 const READY_FILE = '/tmp/stockwatch-worker-ready';
 const STARTUP_TIMEOUT = 20000;
+const RUNTIME_PROBE_INTERVAL_MS = Number(process.env.WORKER_HEALTH_INTERVAL_MS || 30000);
+const RUNTIME_PROBE_TIMEOUT_MS = 5000;
 
 let redisConnection: Redis | undefined;
 let worker: Worker<StockCheckJobData> | undefined;
 let isShuttingDown = false;
+let runtimeProbeTimer: ReturnType<typeof setInterval> | undefined;
+let runtimeHealthy = true;
 
 function withTimeout<T>(
   promise: Promise<T>,
@@ -31,6 +35,47 @@ function withTimeout<T>(
   return Promise.race([promise, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+}
+
+/** Single-line, credential-free error description for logs. */
+function describeError(error: unknown): string {
+  const err = error as { code?: unknown; errorCode?: unknown; message?: unknown } | null | undefined;
+  const code = [err?.code, err?.errorCode].find((value): value is string => typeof value === 'string');
+  const message = typeof err?.message === 'string' ? err.message : String(error);
+  const cause =
+    message
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !/^Invalid `.*` invocation:?$/.test(line) && !/^Please make sure/i.test(line))[0] ??
+    'unknown error';
+  const sanitized = cause
+    .replace(/\b(postgres(?:ql)?|rediss?):\/\/[^\s'"`]+/gi, '$1://<redacted>')
+    .replace(/(password=)[^&\s'"`]+/gi, '$1<redacted>')
+    .slice(0, 300);
+  return code ? `[${code}] ${sanitized}` : sanitized;
+}
+
+/**
+ * Runtime readiness: after startup, periodically re-verify Redis and PostgreSQL.
+ * The Docker healthcheck reads READY_FILE, so the container reports unhealthy
+ * while a dependency (e.g. stale RDS credentials) is broken, and healthy again
+ * once it recovers. Logs only on state transitions.
+ */
+async function runRuntimeProbe() {
+  if (isShuttingDown || !redisConnection) return;
+  try {
+    const pong = await withTimeout(redisConnection.ping(), RUNTIME_PROBE_TIMEOUT_MS, 'Redis PING');
+    if (pong !== 'PONG') throw new Error(`Unexpected Redis PING response: ${pong}`);
+    await withTimeout(prisma.$queryRaw`SELECT 1`, RUNTIME_PROBE_TIMEOUT_MS, 'Database SELECT 1');
+    if (isShuttingDown) return;
+    writeFileSync(READY_FILE, `${process.pid}\n`, { mode: 0o644 });
+    if (!runtimeHealthy) console.log('[Worker] Dependency check recovered; WORKER_READY');
+    runtimeHealthy = true;
+  } catch (error) {
+    removeReadinessFile();
+    if (runtimeHealthy) console.error(`[Worker] Dependency check failed; marking NOT READY: ${describeError(error)}`);
+    runtimeHealthy = false;
+  }
 }
 
 function removeReadinessFile() {
@@ -58,6 +103,7 @@ async function shutdown(signal: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
+  if (runtimeProbeTimer) clearInterval(runtimeProbeTimer);
   removeReadinessFile();
   console.log(`[Worker] Received ${signal}. Starting graceful shutdown...`);
 
@@ -173,11 +219,17 @@ async function startWorker() {
   await withTimeout(worker.waitUntilReady(), STARTUP_TIMEOUT, 'BullMQ readiness');
   if (isShuttingDown) throw new Error('Startup interrupted by shutdown.');
 
-  if (isShuttingDown) {
-    throw new Error('Worker startup interrupted by shutdown.');
-  }
-
   writeFileSync(READY_FILE, `${process.pid}\n`, { mode: 0o644 });
+
+  let probeInFlight = false;
+  runtimeProbeTimer = setInterval(() => {
+    if (probeInFlight) return;
+    probeInFlight = true;
+    void runRuntimeProbe().finally(() => {
+      probeInFlight = false;
+    });
+  }, RUNTIME_PROBE_INTERVAL_MS);
+  runtimeProbeTimer.unref();
 
   console.log('[Worker] WORKER_READY');
   console.log('[Worker] StockWatch worker is active and consuming stock-check jobs.');
@@ -187,8 +239,9 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
 startWorker().catch(async (error) => {
+  if (runtimeProbeTimer) clearInterval(runtimeProbeTimer);
   removeReadinessFile();
-  console.error('[Worker] STARTUP FAILED:', error);
+  console.error(`[Worker] STARTUP FAILED: ${describeError(error)}`);
 
   isShuttingDown = true;
 
