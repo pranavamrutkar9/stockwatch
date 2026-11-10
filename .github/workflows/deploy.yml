@@ -162,7 +162,8 @@ jobs:
             fi
             cd ~/stockwatch
             git fetch origin main
-            git reset --hard origin/main
+            git cat-file -e "${GITHUB_SHA}^{commit}"
+            git checkout --detach "${GITHUB_SHA}"
             export IMAGE_TAG="${GITHUB_SHA}"
             export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
             export REGISTRY="${{ env.REGISTRY }}"

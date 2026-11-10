@@ -23,6 +23,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=3 \
+  CMD ["node", "-e", "process.exit(require('node:fs').existsSync('/tmp/stockwatch-worker-ready') ? 0 : 1)"]
+
 USER node
 
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules

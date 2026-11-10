@@ -31,3 +31,21 @@ Thumbs.db
 
 # Local data / Docker volumes
 pgdata/
+
+# Runtime deployment state and sensitive backups
+.env.*
+!.env.example
+infrastructure/deployment/.current_tag
+infrastructure/deployment/.previous_tag
+*.pre-rds
+*.pre-rds-final
+*.pre-regional-ca
+*.dump
+/d
+
+# Deployment locks, temporary state and local recovery backups
+infrastructure/deployment/.deployment.lock
+infrastructure/deployment/.*.tmp
+infrastructure/deployment/*.pre-auto-rollback
+infrastructure/deployment/*.pre-hardening
+infrastructure/docker/*.save
