@@ -90,7 +90,6 @@ node_run() { # node_run <network> <cmd> [env...]
 }
 node_run bridge "pnpm install --frozen-lockfile >/dev/null 2>&1 && pnpm db:build >/dev/null 2>&1 && echo deps-ready" | tail -1
 
-ADMIN_URL="postgresql://stockwatch_admin:${ADMIN_PW}@${PG}:5432/stockwatch"
 db_roles() { # db_roles <db> [args...]
   ADMIN_DATABASE_URL="postgresql://stockwatch_admin:${ADMIN_PW}@${PG}:5432/$1" \
   APP_DB_PASSWORD="${APP_DB_PASSWORD:-}" MIGRATOR_DB_PASSWORD="${MIGRATOR_DB_PASSWORD:-}" \
