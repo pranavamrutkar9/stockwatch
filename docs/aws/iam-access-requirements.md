@@ -8,7 +8,7 @@
 1. **Recurrence risk of today's outage.** The RDS password changed under running containers. Need to confirm whether `stockwatch-primary-db` uses Secrets Manager–managed master credentials (`MasterUserSecret` in `DescribeDBInstances`) and its rotation schedule (`DescribeSecret` → `RotationEnabled`, `RotationRules`, `NextRotationDate`). Metadata only — secret *values* are explicitly denied.
 2. **Ground truth for DR design:** backup retention, latest restorable time, storage encryption + KMS key (cross-region copies of encrypted backups need a destination-region key), engine minor version, parameter group, subnet group, security groups, public IP vs Elastic IP, root volume.
 3. **DR region feasibility:** `rds:DescribeSourceRegions` (is cross-region automated-backup replication available Sydney → candidate region), `DescribeOrderableDBInstanceOptions` (db.t4g.micro / PG 16 availability), `DescribeInstanceTypeOfferings` (EC2 type availability).
-4. **Cost estimates** from the Pricing API instead of guesses.
+4. ~~Cost estimates from the Pricing API~~ — superseded: prices now come from the public AWS Price List files (no permission needed).
 5. **Route 53:** whether a hosted zone / registered domain already exists.
 
 ## Recommended mechanism
@@ -31,7 +31,7 @@ Containers on this host can reach IMDS. With IMDSv2 and a **hop limit of 1**, co
 
 ## Policy design
 
-Region-scoped with `aws:RequestedRegion` to **ap-southeast-2** (primary) plus the two DR-region candidates **ap-southeast-4** (Melbourne) and **ap-southeast-1** (Singapore). Global services (Route 53, Pricing, S3 bucket listing, CloudWatch) are not region-conditioned because their requests resolve to fixed regions.
+Region-scoped with `aws:RequestedRegion` to **ap-southeast-2** (primary) plus the two DR-region candidates **ap-southeast-4** (Melbourne) and **ap-southeast-1** (Singapore). Global services (Route 53, S3 bucket listing, CloudWatch) are not region-conditioned because their requests resolve to fixed regions.
 
 | Statement | Purpose | Notes |
 |---|---|---|
@@ -39,11 +39,11 @@ Region-scoped with `aws:RequestedRegion` to **ap-southeast-2** (primary) plus th
 | `SecretsManagerMetadataOnly` | rotation enabled/schedule/last rotated for the RDS-managed secret | `ListSecrets` cannot be resource-scoped; `DescribeSecret` returns no secret value |
 | `Ec2AndNetworkingReadOnly` | instance, EBS, AMIs, VPC, subnets, routes, SGs + rules, ENIs, EIPs, prefix lists, AZs, type offerings | deliberately excludes `DescribeInstanceAttribute` and `DescribeLaunchTemplateVersions` (expose user-data, which can contain secrets) |
 | `KmsMetadataForEncryptedBackupsAndSecrets` | key IDs/aliases/rotation status | no `Decrypt` |
-| `MonitoringReadOnly` | CloudWatch metrics/alarms, log group names, AWS Backup inventory, SSM parameter *names*, S3 bucket metadata (Terraform state bucket discovery) | no object reads |
-| `GlobalDnsAndPricingReadOnly` | hosted zones, records, health checks, registered domains, price lists | |
+| `MonitoringReadOnly` | CloudWatch metrics/alarms, AWS Backup inventory, SSM parameter *names*, S3 bucket metadata (Terraform state bucket discovery) | no object reads |
+| `GlobalDnsReadOnly` | hosted zones, records, health checks, registered domains | |
 | `ExplicitlyDenySecretValuesAndDataReads` | defence in depth | an explicit Deny overrides any Allow, including future broader policies on the same role |
 
-Validation performed locally: both files parse as JSON; every `Allow` action is a `Describe*`/`List*`/`Get*` action with no wildcards; policy is 4,862 characters (managed-policy limit 6,144). IAM Access Analyzer policy validation should be run when the policy is created (requires AWS access).
+Final version v1.0: 65 Allow + 13 Deny actions, 3,208 non-whitespace characters (limit 6,144). Full per-action review, trust-policy review, approval checklist and verification procedure: `docs/aws/iam-policy-review.md`.
 
 ## Minimum action required from you
 

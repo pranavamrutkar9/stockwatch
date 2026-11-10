@@ -76,7 +76,7 @@ Verified 2026-11-10 without AWS credentials, from AWS public sources. Items stil
 
 Documented constraints that shape automation:
 - Deleting the source of a PostgreSQL cross-region replica sets the replica to **terminated, not promoted** — promotion must always be explicit (`dr-failover.sh`).
-- Cross-region replication data transfer is charged; current dataset is tiny (5/6/7 rows in the three tables), so transfer cost is negligible.
+- Cross-region replication data transfer is charged at **$0.080/GB Sydney→Melbourne** (AWSDataTransfer price list, verified); current dataset is tiny (5/6/7 rows), so transfer cost is negligible.
 - The replica is created with the **default security group** unless one is specified — Terraform/automation must pass the DR DB security group explicitly.
 - Account limits: ≤ 5 cross-region replicas guaranteed per source; 20 cross-region automated backups per account by default.
 
@@ -155,11 +155,11 @@ Unit prices from the AWS Price List (2026-10-29) unless marked *(unverified)*; m
 |---|---|---|---|
 | Backup retention 1 → 7 days (Sydney) | free up to provisioned storage | ~$0 | ~$0 |
 | PITR test instance (temporary, Sydney) | $0.025/h + storage | — | < $0.70 while running |
-| Option B read replica, db.t4g.micro + 20 GB | $0.025/h + $0.138/GB-mo | **$21.01** | $0.69 |
+| Option B read replica, db.t4g.micro + 20 GB | $0.025/h + $0.138/GB-mo; replication transfer $0.080/GB Sydney→Melbourne | **$21.01** + transfer (dataset is KB-sized) | $0.69 |
 | Option A backup replication (≤ 20 GB) | $0.095/GB-mo + snapshot copy transfer | **$1–3** | negligible |
 | DR EC2 t3.small (x86) running | $0.0264/h | **$19.27** | $0.63 |
 | DR EBS 20 GB gp3 | $0.096/GB-mo | $1.92 | $0.06 |
-| Elastic IPs ×2 | $0.005/h each *(unverified — AmazonVPC price list not checked)* | $7.30 | $0.24 |
+| Elastic IPs ×2 | $0.005/h each (AmazonVPC price list, Melbourne) | $7.30 | $0.24 |
 | Route 53 zone + 2 health checks | $0.50 zone (verified); $0.50/check for AWS endpoints *(unverified)*, $0.75 non-AWS (verified) | $1.50–2.00 | negligible |
 | S3 state + Redis backups | *(unverified)* | < $1 | negligible |
 | Primary Multi-AZ (optional) | $0.051/h vs $0.025/h + storage | +$21.74 | +$0.71 |
@@ -167,6 +167,10 @@ Unit prices from the AWS Price List (2026-10-29) unless marked *(unverified)*; m
 | **Pilot light (A + primary EIP + R53 + S3, DR EC2 only during tests)** | | **≈ $7–9/mo** | |
 
 A three-day assessment window with full warm standby costs ≈ $5.
+
+## 9a. Melbourne environment specification
+
+Detailed build specification, failover/failback runbooks and RPO/RTO measurement plan: `docs/dr-melbourne-environment.md`.
 
 ## 10. Approvals required (none requested to execute yet)
 

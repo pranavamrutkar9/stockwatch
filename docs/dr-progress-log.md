@@ -104,3 +104,16 @@ Not yet proven: a stock-check job processed end-to-end on the recovered stack (S
 
 - Melbourne (ap-southeast-4) selected. Verified from public AWS sources: db.t4g.micro PostgreSQL offered (same price as Sydney), Sydney→Melbourne automated backup replication supported, cross-region PG replicas supported, regional CA bundle exists. Images are amd64-only → x86 DR host. Blockers needing API: Region opt-in status, PG 16.15 availability, source encryption/KMS. See design §4a/§9.
 - `docs/aws/iam-policy-review.md`: per-action review of 78 Allow + 13 Deny actions (13 Optional actions identified for further tightening).
+
+## 2026-11-10 20:00–20:35 UTC — Queue recovery, least-privilege DB roles, IAM v1.0, Melbourne spec
+
+All work below is **implemented and tested on isolated infrastructure only**. Nothing was deployed; production containers, credentials and data were not touched (verified: production containers unchanged and healthy at 20:32 UTC).
+
+- Pushed `d387678` (fast-forward); `origin/main` unchanged at `1cc73a2`.
+- **Stock-check ID as BullMQ job ID + PostgreSQL-backed recovery** (`StockCheckRecoveryService`, backend/producer side, no new API routes). Processor made at-least-once-safe: no-op on redelivery of COMPLETED checks; alerts + COMPLETED committed atomically with `ON CONFLICT DO NOTHING`; non-final failures stay PROCESSING (previously a transient FAILED stopped client polling).
+- **Least-privilege roles:** `stockwatch_app` (DML only) / `stockwatch_migrator` (owner, migrations) via `db-roles.sh` (dry run default, SCRAM verifiers computed locally, RDS guard); `deploy.sh` uses `MIGRATION_DATABASE_URL`; runtime DDL gated behind `DB_BOOTSTRAP_SCHEMA` (dev compose only).
+- **Evidence:** unit 45/45 (backend 35, worker 10; 13 integration tests skipped without infrastructure); `scripts/test-integration.sh` 35/35 checks incl. backend 7/7 and worker 6/6 integration tests **as `stockwatch_app`** against real PostgreSQL 16 + Redis 7; SIGKILL mid-job → stalled job recovered by another worker in 2.0–3.0 s, completed once.
+- **Mutation checks:** old enqueue path → 6/7 backend integration tests fail (e.g. 3 concurrent recoveries created 60 jobs instead of 10; job ID "1" instead of record ID). Old processor → "redelivery after completion" and "retry leaves PROCESSING" fail. The concurrent-duplicate-delivery test also passed on the old processor (race not reproduced), so it does not by itself prove the race fix.
+- **Defects found by the harness and fixed:** `ALTER ROLE … NOSUPERUSER …` rejected for non-superuser admins (would have failed on RDS); harness false-pass due to missing `pipefail`; jest hang on open handles after failures (`--forceExit` + timeout).
+- **IAM v1.0:** 65 Allow (13 optional removed) + 13 Deny; trust-policy review, approval checklist and verify/detach procedure in `docs/aws/iam-policy-review.md`. Not created or attached.
+- **Melbourne:** verified from public price lists — Sydney→Melbourne transfer $0.080/GB, public IPv4 $0.005/h; 31 Route 53 health-checker prefixes. Specification and runbooks: `docs/dr-melbourne-environment.md`.

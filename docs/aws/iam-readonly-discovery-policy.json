@@ -12,21 +12,24 @@
         "rds:DescribeDBSubnetGroups",
         "rds:DescribeDBParameterGroups",
         "rds:DescribeDBParameters",
-        "rds:DescribeOptionGroups",
         "rds:DescribeDBEngineVersions",
         "rds:DescribeOrderableDBInstanceOptions",
         "rds:DescribeSourceRegions",
         "rds:DescribeCertificates",
         "rds:DescribeEvents",
-        "rds:DescribeEventSubscriptions",
         "rds:DescribePendingMaintenanceActions",
         "rds:DescribeAccountAttributes",
-        "rds:DescribeDBLogFiles",
         "rds:ListTagsForResource"
       ],
       "Resource": "*",
       "Condition": {
-        "StringEquals": { "aws:RequestedRegion": ["ap-southeast-2", "ap-southeast-4", "ap-southeast-1"] }
+        "StringEquals": {
+          "aws:RequestedRegion": [
+            "ap-southeast-2",
+            "ap-southeast-4",
+            "ap-southeast-1"
+          ]
+        }
       }
     },
     {
@@ -39,7 +42,13 @@
       ],
       "Resource": "*",
       "Condition": {
-        "StringEquals": { "aws:RequestedRegion": ["ap-southeast-2", "ap-southeast-4", "ap-southeast-1"] }
+        "StringEquals": {
+          "aws:RequestedRegion": [
+            "ap-southeast-2",
+            "ap-southeast-4",
+            "ap-southeast-1"
+          ]
+        }
       }
     },
     {
@@ -54,7 +63,6 @@
         "ec2:DescribeVolumes",
         "ec2:DescribeSnapshots",
         "ec2:DescribeImages",
-        "ec2:DescribeKeyPairs",
         "ec2:DescribeAddresses",
         "ec2:DescribeVpcs",
         "ec2:DescribeSubnets",
@@ -65,16 +73,20 @@
         "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeSecurityGroupRules",
-        "ec2:DescribeVpcEndpoints",
         "ec2:DescribeAvailabilityZones",
         "ec2:DescribeRegions",
-        "ec2:DescribeTags",
         "ec2:DescribeManagedPrefixLists",
         "ec2:GetManagedPrefixListEntries"
       ],
       "Resource": "*",
       "Condition": {
-        "StringEquals": { "aws:RequestedRegion": ["ap-southeast-2", "ap-southeast-4", "ap-southeast-1"] }
+        "StringEquals": {
+          "aws:RequestedRegion": [
+            "ap-southeast-2",
+            "ap-southeast-4",
+            "ap-southeast-1"
+          ]
+        }
       }
     },
     {
@@ -83,12 +95,17 @@
       "Action": [
         "kms:ListKeys",
         "kms:ListAliases",
-        "kms:DescribeKey",
-        "kms:GetKeyRotationStatus"
+        "kms:DescribeKey"
       ],
       "Resource": "*",
       "Condition": {
-        "StringEquals": { "aws:RequestedRegion": ["ap-southeast-2", "ap-southeast-4", "ap-southeast-1"] }
+        "StringEquals": {
+          "aws:RequestedRegion": [
+            "ap-southeast-2",
+            "ap-southeast-4",
+            "ap-southeast-1"
+          ]
+        }
       }
     },
     {
@@ -98,8 +115,6 @@
         "cloudwatch:DescribeAlarms",
         "cloudwatch:ListMetrics",
         "cloudwatch:GetMetricData",
-        "cloudwatch:GetMetricStatistics",
-        "logs:DescribeLogGroups",
         "backup:ListBackupPlans",
         "backup:ListBackupVaults",
         "backup:ListProtectedResources",
@@ -115,21 +130,17 @@
       "Resource": "*"
     },
     {
-      "Sid": "GlobalDnsAndPricingReadOnly",
+      "Sid": "GlobalDnsReadOnly",
       "Effect": "Allow",
       "Action": [
         "route53:ListHostedZones",
-        "route53:ListHostedZonesByName",
         "route53:GetHostedZone",
         "route53:ListResourceRecordSets",
         "route53:ListHealthChecks",
         "route53:GetHealthCheck",
         "route53:GetHealthCheckStatus",
         "route53:GetHealthCheckLastFailureReason",
-        "route53domains:ListDomains",
-        "pricing:DescribeServices",
-        "pricing:GetAttributeValues",
-        "pricing:GetProducts"
+        "route53domains:ListDomains"
       ],
       "Resource": "*"
     },
