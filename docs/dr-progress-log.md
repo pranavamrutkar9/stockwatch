@@ -64,3 +64,15 @@ Evidence (isolated network `sw-phase1-test`, throwaway Redis, compiled code from
 
 1. **Production remediation** (restart/recreate + Redis password rotation) — awaiting approval.
 2. **AWS access** — no instance role, no AWS CLI. Needed to confirm whether RDS uses Secrets Manager–managed master password rotation (would cause this outage to recur) and for all DR phases.
+
+## 2026-11-10 (cont.) — Recovery preparation, IAM spec, DR design
+
+- Commit `3691918` (code + compose healthcheck fix + this log). Re-tested on a clean export before commit: typecheck pass, 30/30 tests, builds pass; diff secret scan clean.
+- **Recovery runbook PREPARED, NOT EXECUTED:** `docs/runbooks/production-credential-recovery.md`. Procedure rehearsed end-to-end on an isolated replica stack (`compose -p rh`): Redis `CONFIG SET` via stdin → new pw PONG / old pw WRONGPASS, existing connections kept; `--no-deps` recreate left Redis untouched, backend healthy in 17 s; Redis recreate healthy in 6 s with persistent keys preserved; 0 secret leaks. Command forms re-verified against throwaway Redis containers; runbook bash blocks pass `bash -n`. Production verified unchanged afterwards.
+- Production queue at 19:45 UTC: wait=0 active=0, job id counter=6.
+- **Finding:** deployed Redis healthcheck reports healthy on WRONGPASS (redis-cli exits 0) — VERIFIED; fixed in `3691918`, takes effect when Redis is recreated.
+- **Finding:** deployed `1cc73a2` worker performs no DB check at startup — only job processing proves DB access.
+- **Finding (DR blocker):** BullMQ auto-increment job IDs collide with `stock_checks.jobId UNIQUE` after Redis restore/empty start — design fix `jobId = stockCheck.id` (not implemented yet).
+- **IAM:** `docs/aws/iam-readonly-discovery-policy.json`, `docs/aws/ec2-trust-policy.json`, `docs/aws/iam-access-requirements.md` — PREPARED. IMDS confirms no instance role (404).
+- **DR design:** `docs/disaster-recovery-design.md` — DESIGN only; AWS facts marked *(verify)*; costs are unverified estimates.
+- Housekeeping pending approval: two anonymous Docker volumes created by my isolated test Redis containers at 19:35:17 and 19:35:58 UTC (`7e6c2778b28a…`, `c5ff5e059b71…`, label `com.docker.volume.anonymous`). Pre-existing anonymous volume `63f11b1a…` (15:58 UTC) is NOT mine and must be preserved.
