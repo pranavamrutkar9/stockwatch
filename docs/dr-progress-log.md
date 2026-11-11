@@ -134,3 +134,7 @@ Constraint: **zero additional AWS spend**. No AWS resource was created or modifi
 - `096bf9e` Terraform (Melbourne): zero-cost default + `cost_guard`; 15 offline tests with `mock_provider`; validate 0 errors/0 warnings. Terraform 1.17.1 installed after HashiCorp GPG + SHA256 verification. **Not planned/applied against AWS.**
 - `4ae8608` failover/failback automation (dry-run default, date-bound confirmation, billable gate, primary-host guard); 25 tests with stub aws CLI; found a repo-root path bug that would have aborted a real failover after the irreversible promotion.
 - `bf7bc6a` backup/restore automation; 16 isolated tests; **verified backup of production created read-only** (`~/stockwatch-backups/postgres/20261110T215542Z`, inventory 5 / alerts 7 / checks 6, hashes match).
+
+## 2026-11-11 — Correction: RDS master privileges
+
+The statement above (entry `08f29e1`) that the master user "needs `SET ROLE stockwatch_migrator` for break-glass" data access after the ownership transfer holds only for the isolated emulation. On production RDS, `stockwatch_admin` keeps direct read/write/TRUNCATE access through the AWS-managed `rds_superuser` role (`pg_read_all_data`, `pg_write_all_data`, granted by `rdsadmin`). `SET ROLE stockwatch_migrator` is the emergency migration-access mechanism. Details: `docs/database-roles.md`, `docs/runbooks/db-roles-rollout.md`.
