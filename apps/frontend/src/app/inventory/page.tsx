@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useId } from 'react';
-import { Package, Plus, Edit2, AlertCircle, RefreshCw, CheckCircle } from 'lucide-react';
+import { Package, Plus, Edit2, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface InventoryItem {
   id: string;

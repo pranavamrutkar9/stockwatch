@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Play, RefreshCw, CheckCircle2, XCircle, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { Play, RefreshCw, CheckCircle2, ChevronDown, ChevronRight } from 'lucide-react';
 
 interface StockAlert {
   id: string;
@@ -105,7 +105,7 @@ export default function StockChecksPage() {
         setIsRunningCheck(false);
         alert('Failed to enqueue stock check');
       }
-    } catch (err) {
+    } catch {
       setIsRunningCheck(false);
       alert('Error triggering stock check');
     }
