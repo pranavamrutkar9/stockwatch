@@ -43,30 +43,39 @@ describe('StockChecksService', () => {
   });
 
   describe('enqueue', () => {
-    it('creates a PENDING database record and enqueues BullMQ job promptly', async () => {
-      prisma.stockCheck.create.mockResolvedValue({
-        id: 'check-uuid-1',
-        jobId: 'temp-job-id',
-        status: 'PENDING',
-      });
-      queueService.addStockCheckJob.mockResolvedValue('bull-job-123');
-      prisma.stockCheck.update.mockResolvedValue({
-        id: 'check-uuid-1',
-        jobId: 'bull-job-123',
-        status: 'PENDING',
-      });
+    it('persists a PENDING record whose jobId equals its ID, then enqueues with that job ID', async () => {
+      prisma.stockCheck.create.mockResolvedValue({});
+      queueService.addStockCheckJob.mockImplementation(async (id: string) => id);
 
       const result = await service.enqueue();
 
-      expect(prisma.stockCheck.create).toHaveBeenCalled();
-      expect(queueService.addStockCheckJob).toHaveBeenCalledWith('check-uuid-1');
+      const { data } = prisma.stockCheck.create.mock.calls[0][0];
+      expect(data.status).toBe('PENDING');
+      expect(data.jobId).toBe(data.id);
+      expect(data.id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(queueService.addStockCheckJob).toHaveBeenCalledWith(data.id);
+      expect(prisma.stockCheck.update).not.toHaveBeenCalled();
       expect(result).toEqual({
         success: true,
-        id: 'check-uuid-1',
-        jobId: 'bull-job-123',
+        id: data.id,
+        jobId: data.id,
         status: 'PENDING',
         message: 'Stock check queued successfully',
       });
+      // Persist before enqueue: the record must exist if the job is delivered immediately.
+      expect(prisma.stockCheck.create.mock.invocationCallOrder[0]).toBeLessThan(
+        queueService.addStockCheckJob.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('marks the record FAILED and rethrows when Redis is unavailable', async () => {
+      prisma.stockCheck.create.mockResolvedValue({});
+      queueService.addStockCheckJob.mockRejectedValue(new Error('Connection is closed.'));
+
+      await expect(service.enqueue()).rejects.toThrow('Connection is closed.');
+      expect(prisma.stockCheck.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED' }) }),
+      );
     });
   });
 

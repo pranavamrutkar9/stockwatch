@@ -47,6 +47,8 @@ services:
       PORT: 4000
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-stockwatch}:${POSTGRES_PASSWORD:-stockwatch_secure_password}@postgres:5432/${POSTGRES_DB:-stockwatch}?schema=public
+      # Local stack has no migration step; let the backend create the schema (never in production).
+      DB_BOOTSTRAP_SCHEMA: "true"
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}

@@ -155,16 +155,29 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           envs: GITHUB_SHA
           script: |
-            set -e
+            set -euo pipefail
             echo "=== Initiating StockWatch Cloud Deployment ==="
-            if [ ! -d ~/stockwatch ]; then
-              git clone https://github.com/${{ github.repository }}.git ~/stockwatch
+            # Deploy from a dedicated clone. ~/stockwatch is an operator working copy and is never
+            # checked out by CI; it only provides the protected runtime .env and deployment state
+            # (gitignored files), so tag history and automatic rollback continue to work.
+            DEPLOY_DIR="$HOME/stockwatch-deploy"
+            RUNTIME_DIR="$HOME/stockwatch"
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              git clone --quiet https://github.com/${{ github.repository }}.git "$DEPLOY_DIR"
             fi
-            cd ~/stockwatch
-            git fetch origin main
-            git reset --hard origin/main
+            cd "$DEPLOY_DIR"
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "ERROR: deployment checkout $DEPLOY_DIR has local changes; refusing to deploy."
+              exit 1
+            fi
+            git fetch --quiet origin main
+            git cat-file -e "${GITHUB_SHA}^{commit}"
+            git checkout --quiet --detach "${GITHUB_SHA}"
+            test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+            export STOCKWATCH_ENV_FILE="$RUNTIME_DIR/.env"
+            export STOCKWATCH_STATE_DIR="$RUNTIME_DIR/infrastructure/deployment"
             export IMAGE_TAG="${GITHUB_SHA}"
             export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
             export REGISTRY="${{ env.REGISTRY }}"
             bash infrastructure/deployment/deploy.sh "${GITHUB_SHA}"
-            echo "=== Cloud Deployment Finished Successfully ==="
+            echo "=== Cloud Deployment Finished Successfully: ${GITHUB_SHA} ==="

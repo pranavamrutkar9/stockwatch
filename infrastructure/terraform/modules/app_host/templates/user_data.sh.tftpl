@@ -1,0 +1,30 @@
+#!/bin/bash
+# StockWatch DR host bootstrap (pilot light). Rendered by Terraform; contains no secrets.
+# Secrets are read at runtime from SSM Parameter Store (${ssm_parameter_prefix}) via the
+# instance role. The backend/worker are NOT started here: dr-failover.sh starts them after
+# the database has been promoted.
+set -Eeuo pipefail
+exec > >(tee -a /var/log/stockwatch-bootstrap.log) 2>&1
+echo "[bootstrap] $(date -u +%FT%TZ) start"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y ca-certificates curl git unzip docker.io docker-compose-v2
+systemctl enable --now docker
+
+# AWS CLI v2 (for SSM parameter reads during failover).
+if ! command -v aws >/dev/null; then
+  curl -fsSL -o /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install && rm -rf /tmp/aws /tmp/awscliv2.zip
+fi
+
+install -d -o ubuntu -g ubuntu /home/ubuntu/stockwatch
+sudo -u ubuntu git clone "${repo_url}" /home/ubuntu/stockwatch || true
+sudo -u ubuntu git -C /home/ubuntu/stockwatch fetch --all --quiet
+sudo -u ubuntu git -C /home/ubuntu/stockwatch checkout --detach "${git_commit}"
+
+curl -fsSL -o /home/ubuntu/${region}-bundle.pem "https://truststore.pki.rds.amazonaws.com/${region}/${region}-bundle.pem"
+chown ubuntu:ubuntu /home/ubuntu/${region}-bundle.pem
+grep -q 'BEGIN CERTIFICATE' /home/ubuntu/${region}-bundle.pem
+
+echo "[bootstrap] $(date -u +%FT%TZ) ready (app not started; awaiting dr-failover.sh)"

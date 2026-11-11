@@ -1,0 +1,13 @@
+# Remote state (approval required: creates/uses an S3 bucket).
+# Native S3 locking (Terraform >= 1.10) - no DynamoDB table needed.
+# The bucket lives in ap-southeast-4 so state survives a Sydney outage.
+#
+# terraform {
+#   backend "s3" {
+#     bucket       = "<stockwatch-tfstate-ACCOUNT_ID-apse4>"
+#     key          = "dr-melbourne/terraform.tfstate"
+#     region       = "ap-southeast-4"
+#     encrypt      = true
+#     use_lockfile = true
+#   }
+# }
