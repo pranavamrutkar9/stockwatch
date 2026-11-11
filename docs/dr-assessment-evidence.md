@@ -44,7 +44,7 @@ No live Melbourne recovery and no public global DNS failover have been performed
 
 | Item | Category | Evidence |
 |---|---|---|
-| `stockwatch_app` (DML only) / `stockwatch_migrator` (owner) / master break-glass | [A] | `scripts/test-integration.sh` 35/35 (privilege boundary, ownership transfer, rotation) |
+| `stockwatch_app` (DML only) / `stockwatch_migrator` (owner) / RDS master (elevated; direct data access via AWS-managed `rds_superuser`, see `docs/database-roles.md` correction) | [A] | `scripts/test-integration.sh` 35/35 (privilege boundary, ownership transfer, rotation) |
 | Plan against a copy of production data | [A] (source read-only) | `scripts/rehearse-db-roles-on-copy.sh` 19/19; live catalog facts recorded in `docs/database-roles.md` |
 | Applied in production | **not done** — requires explicit approval (`docs/database-roles.md` rollout plan) | — |
 

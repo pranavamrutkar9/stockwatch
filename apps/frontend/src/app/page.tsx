@@ -145,7 +145,7 @@ export default function DashboardPage() {
         setIsRunningCheck(false);
         alert('Failed to enqueue stock check');
       }
-    } catch (err) {
+    } catch {
       setIsRunningCheck(false);
       alert('Error triggering stock check');
     }

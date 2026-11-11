@@ -1,5 +1,7 @@
 # StockWatch System Architecture & Technical Design
 
+> **Historical (pre-RDS) design.** This document describes the original single-host stack with a local PostgreSQL container. Production now uses **Amazon RDS PostgreSQL 16** with separated database roles; see [`docs/assessment/02-system-architecture.md`](assessment/02-system-architecture.md) for the current architecture.
+
 ## 1. High-Level Architecture Diagram
 
 ```mermaid

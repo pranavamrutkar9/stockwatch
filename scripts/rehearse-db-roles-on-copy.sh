@@ -41,7 +41,8 @@ PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$*"; }
 bad() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$*"; }
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
-cleanup() { local rc=$?; docker rm -fv "$PG" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; rm -rf "$PRIV"; exit "$rc"; }
+LIVE_PID=""
+cleanup() { local rc=$?; if [[ -n "$LIVE_PID" ]]; then kill "$LIVE_PID" 2>/dev/null || true; fi; docker rm -fv "${PG}-live-pool" "${PG}-control-pool" "$PG" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; rm -rf "$PRIV"; exit "$rc"; }
 trap cleanup EXIT
 
 # Source connection as libpq env (verify-full TLS when a CA file is given).
@@ -115,15 +116,45 @@ diff -q "$PRIV/source-hashes.txt" "$PRIV/copy-before.txt" >/dev/null && ok "copy
 db_roles() { ADMIN_DATABASE_URL="postgresql://stockwatch_admin:${ADMIN_PW}@${PG}:5432/stockwatch" \
   APP_DB_PASSWORD="$APP_PW" MIGRATOR_DB_PASSWORD="$MIGRATOR_PW" bash "$ROOT/infrastructure/deployment/db-roles.sh" --docker-network "$NET" "$@"; }
 
-log "3. Role plan on the copy"
+log "3. Role plan on the copy (zero-downtime transition while a simulated app runs as the master user)"
 db_roles > "$PRIV/guard.txt" 2>&1 && bad "plan accepted admin-owned schema without --transfer-ownership" \
   || { grep -q 'not owned by stockwatch_migrator' "$PRIV/guard.txt" && ok "guard: refuses admin-owned schema without --transfer-ownership" || { bad "unexpected guard error"; cat "$PRIV/guard.txt"; }; }
-db_roles --transfer-ownership > "$PRIV/dry.txt" 2>&1 && ok "dry run with --transfer-ownership (rolled back)" || { bad "dry run failed"; cat "$PRIV/dry.txt"; }
+db_roles --transfer-ownership --transition-grant > "$PRIV/dry.txt" 2>&1 && ok "dry run with --transfer-ownership --transition-grant (rolled back)" || { bad "dry run failed"; cat "$PRIV/dry.txt"; }
 [[ "$(copy_psql pgsuper "$SUPER_PW" postgres <<<"SELECT count(*) FROM pg_roles WHERE rolname IN ('stockwatch_app','stockwatch_migrator')")" == 0 ]] \
   && ok "dry run left no roles" || bad "dry run left roles"
-db_roles --transfer-ownership --apply > "$PRIV/apply.txt" 2>&1 && ok "apply with --transfer-ownership" || { bad "apply failed"; cat "$PRIV/apply.txt"; }
+
+# Simulated running application connected as the master user (what production does today):
+# one persistent pooled session plus a fresh connection every iteration, both doing reads and
+# (rolled-back) writes, tagged with an application_name like a real client.
+cat > "$PRIV/live.sql" <<'SQL'
+SELECT 'LIVE-OK ' || count(*) FROM stock_checks;
+BEGIN;
+INSERT INTO stock_checks (id, "jobId") VALUES ('live', 'live');
+DELETE FROM stock_checks WHERE id = 'live';
+ROLLBACK;
+SQL
+LIVE_SQL="$(cat "$PRIV/live.sql")"
+start_pool() { # start_pool <container-name>: persistent pooled session as the master user
+  docker run -d --name "$1" --network "$NET" -e PGPASSWORD="$ADMIN_PW" -e PGAPPNAME=stockwatch-backend-sim -v "$PRIV/live.sql:/live.sql:ro" "$PG_IMAGE" sh -c \
+    "while true; do cat /live.sql; sleep 0.1; done | psql -h $PG -U stockwatch_admin -d stockwatch -X -q -t -A -v ON_ERROR_STOP=0 2>&1" >/dev/null
+}
+start_pool "${PG}-live-pool"
+( while [[ ! -f "$PRIV/stop-live" ]]; do
+    if copy_psql stockwatch_admin "$ADMIN_PW" stockwatch <<<"$LIVE_SQL" >/dev/null; then echo OK; else echo FAIL; fi
+  done > "$PRIV/live-new-conn.log" ) &
+LIVE_PID=$!
+sleep 3
+db_roles --transfer-ownership --transition-grant --apply > "$PRIV/apply.txt" 2>&1 && ok "apply with --transfer-ownership --transition-grant (live app running)" || { bad "apply failed"; cat "$PRIV/apply.txt"; }
 sed -n '/rolname/,/^(/p;/object |/,/^(/p' "$PRIV/apply.txt" | sed 's/^/    /'
 grep -qF -- "$APP_PW" "$PRIV/apply.txt" && bad "password in output" || ok "no password in output"
+sleep 3
+pool_errors="$(docker logs "${PG}-live-pool" 2>&1 | grep -ciE 'error|denied' || true)"
+pool_ok="$(docker logs "${PG}-live-pool" 2>&1 | grep -c 'LIVE-OK' || true)"
+docker logs "${PG}-live-pool" 2>&1 | grep -iE 'error|denied' | sed -E 's/[0-9]+/N/g' | sort | uniq -c | head -5 | sed 's/^/    pooled-session: /' || true
+new_ok="$(grep -c OK "$PRIV/live-new-conn.log" || true)"; new_fail="$(grep -c FAIL "$PRIV/live-new-conn.log" || true)"
+[[ "$pool_errors" == 0 && "$pool_ok" -gt 20 && "$new_fail" == 0 && "$new_ok" -gt 3 ]] \
+  && ok "simulated app as master user: 0 errors across the apply (pooled session ${pool_ok} OK / 0 errors; new connections ${new_ok} OK / 0 failed)" \
+  || bad "simulated app saw errors during apply (pooled=${pool_errors}, new-conn fail=${new_fail}, ok=${new_ok})"
 
 log "4. Migrations as stockwatch_migrator"
 MIG_URL="postgresql://stockwatch_migrator:${MIGRATOR_PW}@${PG}:5432/stockwatch?schema=public"
@@ -145,14 +176,40 @@ for sql in "CREATE TABLE x (i int)" "TRUNCATE stock_alerts" "DROP TABLE stock_al
   out="$(app "$sql" || true)"; grep -qiE 'permission denied|must be owner' <<<"$out" && ok "app denied: $sql" || bad "app NOT denied: $sql ($out)"
 done
 
-log "6. Data integrity after the role change"
-# After the transfer the master user no longer owns or inherits table access (membership is
-# INHERIT FALSE); break-glass reads require an explicit SET ROLE.
+log "6. End of transition (app switched to stockwatch_app)"
+db_roles --end-transition --apply > "$PRIV/end-refused.txt" 2>&1 && bad "end-transition ran while master-user client sessions were connected" \
+  || { grep -q 'still connected as stockwatch_admin' "$PRIV/end-refused.txt" && ok "end-transition refused while the simulated app still uses the master user" || { bad "unexpected end-transition error"; cat "$PRIV/end-refused.txt"; }; }
+touch "$PRIV/stop-live"; wait "$LIVE_PID" 2>/dev/null || true; docker rm -fv "${PG}-live-pool" >/dev/null
+db_roles --end-transition > "$PRIV/end-dry.txt" 2>&1 && ok "end-transition dry run" || { bad "end-transition dry run"; cat "$PRIV/end-dry.txt"; }
+db_roles --end-transition --apply > "$PRIV/end.txt" 2>&1 && ok "end-transition applied after the switch" || { bad "end-transition failed"; cat "$PRIV/end.txt"; }
+sed -n '/object |/,/^(/p' "$PRIV/end.txt" | sed 's/^/    /'
 out="$(copy_psql stockwatch_admin "$ADMIN_PW" stockwatch <<<"SELECT 1 FROM stock_checks LIMIT 1" || true)"
-grep -q 'permission denied' <<<"$out" \
-  && ok "master user has no implicit table access after transfer (break-glass needs SET ROLE)" || bad "master user still reads tables implicitly"
+grep -q 'permission denied' <<<"$out" && ok "master user has no implicit table access after end-transition" || bad "master user still reads tables implicitly"
+out="$(copy_psql stockwatch_admin "$ADMIN_PW" stockwatch <<<"SET ROLE stockwatch_migrator; SELECT count(*) FROM stock_checks;" || true)"
+[[ "$out" =~ ^[0-9]+$ ]] && ok "break-glass: master user reads via SET ROLE stockwatch_migrator" || bad "break-glass failed: $out"
+out="$(app "SELECT count(*) FROM stock_checks" || true)"; [[ "$out" =~ ^[0-9]+$ ]] && ok "app still works after end-transition" || bad "app broken after end-transition: $out"
+# Negative control: the simulator must detect the failure mode the transition grant prevents.
+start_pool "${PG}-control-pool"; sleep 2
+ctl="$(docker logs "${PG}-control-pool" 2>&1 | grep -c 'permission denied' || true)"; docker rm -fv "${PG}-control-pool" >/dev/null
+[[ "$ctl" -gt 0 ]] && ok "negative control: a master-user app session now fails (permission denied x${ctl}) - simulator detects the breakage" || bad "negative control did not fail"
+
+log "7. Data integrity after the role change"
 copy_psql stockwatch_admin "$ADMIN_PW" stockwatch <<<"SET ROLE stockwatch_migrator; $HASH_SQL" > "$PRIV/copy-after.txt"
 diff -q "$PRIV/source-hashes.txt" "$PRIV/copy-after.txt" >/dev/null && ok "row counts and content hashes unchanged by the role change" || bad "data changed"
+
+log "8. Rollback (app reverted to the master user)"
+db_roles --rollback > "$PRIV/rb-dry.txt" 2>&1 && ok "rollback dry run" || { bad "rollback dry run"; cat "$PRIV/rb-dry.txt"; }
+db_roles --rollback --apply > "$PRIV/rb.txt" 2>&1 && ok "rollback applied" || { bad "rollback failed"; cat "$PRIV/rb.txt"; }
+sed -n '/object |/,/^(/p;/rolname/,/^(/p' "$PRIV/rb.txt" | sed 's/^/    /'
+owners="$(copy_psql pgsuper "$SUPER_PW" stockwatch <<<"SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND relkind='r'")"
+typeowner="$(copy_psql pgsuper "$SUPER_PW" stockwatch <<<"SELECT pg_get_userbyid(typowner) FROM pg_type WHERE typname='CheckStatus'")"
+[[ "$owners" == stockwatch_admin && "$typeowner" == stockwatch_admin ]] && ok "rollback: all tables and enum owned by stockwatch_admin again" || bad "rollback owners: $owners / $typeowner"
+out="$(copy_psql stockwatch_admin "$ADMIN_PW" stockwatch <<<"$LIVE_SQL" || true)"; [[ "$out" =~ ^LIVE-OK\ [0-9]+$ ]] && ok "rollback: master user DML works directly (app reverted)" || bad "master DML after rollback: $out"
+out="$(app "SELECT 1" || true)"; grep -qiE 'not permitted to log in|permission denied' <<<"$out" && ok "rollback: stockwatch_app login disabled (NOLOGIN)" || bad "app login after rollback: $out"
+PROBE_PW="$(rand)"; copy_psql pgsuper "$SUPER_PW" postgres <<<"CREATE ROLE sw_probe LOGIN PASSWORD '${PROBE_PW}'" >/dev/null
+out="$(copy_psql sw_probe "$PROBE_PW" stockwatch <<<"SELECT 1" || true)"; [[ "$out" == 1 ]] && ok "rollback: PUBLIC CONNECT restored (default database ACL behaviour)" || bad "PUBLIC connect after rollback: $out"
+copy_psql stockwatch_admin "$ADMIN_PW" stockwatch <<<"$HASH_SQL" > "$PRIV/copy-rb.txt"
+diff -q "$PRIV/source-hashes.txt" "$PRIV/copy-rb.txt" >/dev/null && ok "rollback: row counts and content hashes unchanged" || bad "data changed by rollback"
 
 echo
 log "Summary: ${PASS} passed, ${FAIL} failed (source database was accessed read-only)"

@@ -1,5 +1,7 @@
 # Runbook — Production Recovery: Stale RDS Credentials + Redis Password Rotation
 
+> **Historical runbook (executed 2026-11-10 on release `1cc73a2`).** Kept as incident evidence. The application no longer uses the RDS master credential; see [`db-roles-rollout.md`](db-roles-rollout.md) and [`rds-master-password-rotation.md`](rds-master-password-rotation.md).
+
 **Status:** EXECUTED 2026-11-10 19:54:34–19:56:49 UTC (Steps 0–4, 6 and read-only Step 5; Step 5b not approved, not run). Results: `docs/dr-progress-log.md`.
 **Incident:** backend/worker were created (2026-11-10 11:43 UTC) with an RDS password that was changed later (~17:12 UTC). New DB connections fail with Prisma P1000 → `/api/health` 503, `/api/inventory` 500, frontend unhealthy (it proxies backend health).
 **Complication:** `.env` already contains the *new* Redis password; the running Redis, backend and worker use the *old* one. Recreating backend/worker from `.env` without first rotating Redis would break Redis auth.
