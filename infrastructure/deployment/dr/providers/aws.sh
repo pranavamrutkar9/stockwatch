@@ -40,7 +40,10 @@ dr_p_preflight() {
   command -v aws >/dev/null || dr_die "aws CLI not found"
   _aws sts get-caller-identity >/dev/null || dr_die "no AWS credentials"
   [[ "${DR_IMAGE_TAG:-}" =~ ^[0-9a-f]{40}$ ]] || dr_die "DR_IMAGE_TAG must be a 40-character commit SHA"
-  local status; status="$(_db "$DR_REGION" "$DR_REPLICA_ID" | _jq "d['DBInstanceStatus']")" || dr_die "replica ${DR_REPLICA_ID} not found in ${DR_REGION}"
+  local json status
+  json="$(_db "$DR_REGION" "$DR_REPLICA_ID" 2>/dev/null)" \
+    || dr_die "replica ${DR_REPLICA_ID} not found or not accessible in ${DR_REGION} (region enabled? replica provisioned? permissions?)"
+  status="$(_jq "d['DBInstanceStatus']" <<<"$json")"
   dr_log "CHECK" "replica status=${status}"
 }
 
