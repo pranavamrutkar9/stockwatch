@@ -112,6 +112,13 @@ Detection ≈ 3 × 30 s = 90 s; client switch ≤ TTL 60 s after Route 53 flips.
 - **Timestamps:** T0 (injection), T_detect (Route 53 health check unhealthy / alarm), T_promote_start/end, T_app_healthy, T_dns (resolver returns Melbourne EIP), T_restored. Each from command output, not estimates.
 - **Consistency:** per-table row counts + deterministic ordered-row SHA-256 between the promoted DB and a pre-failure export.
 
+## 9a. Discovery update (2026-11-11, read-only role)
+
+- Melbourne is **not enabled** on the account (`not-opted-in`) — enabling it is a free, account-level change requiring approval.
+- The primary is encrypted with AWS-managed `alias/aws/rds` (single-Region key): the replica needs `kms_key_arn` set to a key in ap-southeast-4.
+- The primary has **no Elastic IP** (auto-assigned public IPv4 changes on stop/start); the app host is in a public subnet of the default VPC with an unencrypted 25 GiB root volume.
+- Master credentials are not Secrets Manager–managed; the 2026-11-10 outage was a manual `Reset master credentials` at 17:04:17Z.
+
 ## 10. Remaining blockers before provisioning
 
 1. Read-only IAM role (approval pending) → verify opt-in status, PG 16.15 availability, encryption/KMS, primary SG rules, EIP.

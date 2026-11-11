@@ -1,6 +1,6 @@
 # Route 53 / DNS Analysis — `stockwatch-hz` (Phase 3)
 
-**Status:** PARTIAL — DNS-level facts VERIFIED from inside the primary VPC (no AWS credentials needed). API-level facts (VPC associations, full record list, health checks, routing policies) are **pending the read-only role**. No hosted zone, record or health check has been created, changed or deleted.
+**Status:** COMPLETE — DNS-level facts verified from inside the primary VPC (2026-11-10) and API-level facts verified with the read-only role (2026-11-11, `docs/aws/discovery-2026-11-11.md`). No hosted zone, record or health check has been created, changed or deleted.
 
 ## 1. Verified facts (2026-11-10, via the VPC resolver 169.254.169.253 from the primary host)
 
@@ -22,6 +22,19 @@ aws route53 get-hosted-zone --id <ZONE_ID>                            # Config.P
 aws route53 list-resource-record-sets --hosted-zone-id <ZONE_ID>      # records, routing policies (Failover/SetIdentifier), HealthCheckId
 aws route53 list-health-checks                                        # any existing checks (and how many: first 50 AWS-endpoint checks are free)
 ```
+
+## 2a. API-verified facts (2026-11-11)
+
+| Fact | Value |
+|---|---|
+| Zone | `stockwatch-hz.` — `Z09769103NHQ10AO183K7` |
+| Type | **private** (`Config.PrivateZone = true`), no delegation set |
+| VPC associations | `vpc-02371e067f7e28e42` (ap-southeast-2) only |
+| Records | 2: NS (TTL 172800) and SOA (TTL 900) — no application records |
+| Routing policies | none (no failover / weighted / latency records) |
+| Health checks (account) | none |
+| Registered domains | none; Route 53 Domains API unavailable on this free-plan account |
+| Dependencies | nothing resolves application names from this zone; changing it would not affect production |
 
 ## 3. Cost facts (AWS Price List, Route 53, retrieved 2026-11-10)
 
@@ -48,7 +61,7 @@ Conclusion: anything demonstrated in `stockwatch-hz` proves **Route 53 failover-
 
 ## 5. Recommendation — strongest demonstration without additional cost
 
-**Tier 0 (done, zero cost, no AWS change):** simulated DNS switch inside `dr-failover.sh` / `dr-failback.sh` (local provider writes the resolver mapping; S5/S6 in `docs/dr-simulation-results.md`). Proves the automation step ordering, not Route 53.
+**Tier 0 (done, zero cost, no AWS change):** local CoreDNS failover simulation (`scripts/dns-failover-sim.sh`, results in `docs/dr-assessment-evidence.md`) plus the DNS step of `dr-failover.sh` / `dr-failback.sh`. Proves health-check-driven record switching and TTL behaviour locally, not Route 53.
 
 **Tier 1 (recommended; ~$0, needs approval and write permissions):** real Route 53 failover routing in the existing private zone, without touching production traffic:
 
