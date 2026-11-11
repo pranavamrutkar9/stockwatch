@@ -15,6 +15,8 @@ Start here. Each chapter summarises one area and links to the detailed evidence 
 | 09 | [RTO / RPO measurements](09-rto-rpo-measurements.md) |
 | 10 | [Test evidence index](10-test-evidence.md) |
 | 11 | [Known limitations](11-known-limitations.md) |
+| 12 | [Video demonstration runbook (local DR simulation)](12-video-demonstration-runbook.md) |
+| 13 | [Video script](13-video-script.md) |
 
 ## Evidence classification used throughout
 

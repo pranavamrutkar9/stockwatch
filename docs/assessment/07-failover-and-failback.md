@@ -16,7 +16,7 @@
 
 ## End-to-end (Local simulation verified)
 
-`scripts/dr-simulate.sh` promotes a real PostgreSQL streaming standby and starts the secondary application with empty Redis + queue reconstruction, then fails back by re-seeding the old region and switching with writers stopped. Results in [09](09-rto-rpo-measurements.md) (S5/S6).
+`scripts/dr-simulate.sh` promotes a real PostgreSQL streaming standby and starts the secondary application with empty Redis + queue reconstruction, then fails back by re-seeding the old region and switching with writers stopped. Results in [09](09-rto-rpo-measurements.md) (S5/S6). A step-by-step version for the video, with a simulated DNS front door and checksum verification, is [`scripts/dr-demo.sh`](../../scripts/dr-demo.sh) ([12](12-video-demonstration-runbook.md)).
 
 ## Deployment procedure used in production
 
