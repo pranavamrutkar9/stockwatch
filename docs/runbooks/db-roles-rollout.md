@@ -1,8 +1,36 @@
 # Runbook — Production Database Role Rollout (`stockwatch_app` / `stockwatch_migrator`)
 
-**Status:** PREPARED, NOT APPLIED. Requires explicit approval for each phase.
+**Status:** APPLIED to production on 2026-11-11 (Phase 2 02:34:37Z, Phase 3 02:44:58Z, Phase 4 02:46:34Z). Backend and worker run as `stockwatch_app`; the temporary transition grant has been removed. See "Production result and RDS master privileges" below — it corrects an earlier claim in this runbook.
 **Target:** RDS `stockwatch-primary-db` (PostgreSQL 16.15), database `stockwatch`.
 **Code:** branch `feat/db-roles-rollout` (adds `--transition-grant`, `--end-transition`, `--rollback`, `lock_timeout 5s`).
+
+## Production result and RDS master privileges (correction, 2026-11-11)
+
+**Correction.** Earlier versions of this runbook stated that, after the ownership transfer and the end of the transition, the RDS master user would have *no direct access to application tables* and would need `SET ROLE stockwatch_migrator` to read or write them. **That is false on Amazon RDS** and was based on an isolated PostgreSQL emulation that does not model RDS's AWS-managed roles.
+
+Verified on production after Phase 4 (read-only catalog queries):
+
+| Fact | Value |
+|---|---|
+| Explicit table grants to `stockwatch_admin` | **0** — the temporary transition grant was removed by `--end-transition` (no `stockwatch_admin` entry in any table ACL) |
+| `stockwatch_admin` memberships | `rds_superuser` (granted by `rdsadmin`), which inherits `pg_read_all_data` and `pg_write_all_data`; plus `stockwatch_migrator` (`INHERIT FALSE, SET TRUE`) |
+| `has_table_privilege('stockwatch_admin', …)` on application tables | SELECT, INSERT, UPDATE, DELETE and TRUNCATE all **true** (`rds_superuser` itself reports these on every table) |
+| Can the master user remove this? | **No** — the memberships are granted and managed by AWS (`rdsadmin`); revoking them is neither possible nor supported |
+
+Consequences:
+
+- The RDS master account `stockwatch_admin` is an **elevated, AWS-managed account with direct data access by design**. It is not a restricted role and must be protected as a credential (long random password, not stored in application configuration, containers, source control or logs).
+- `SET ROLE stockwatch_migrator` is the **emergency migration-access mechanism** — it lets the master act as the schema owner (DDL, ownership changes, `migrate` operations). It is **not** a prerequisite for the master's data access.
+- The transition grant was a sound precaution derived from the emulation; on RDS it turned out to be **redundant**, because the master user kept data access through `rds_superuser` throughout. It caused no harm and has been removed.
+- What the rollout does deliver on RDS: the application no longer uses the master credential (rotating it cannot take the application down — the cause of the 2026-11-10 outage); runtime and migration privileges are separated; the runtime role cannot change the schema, truncate tables or read migration history.
+
+## Role model (production, after rollout)
+
+| Account | Type | Data access | Schema (DDL) | Migration history | Used by |
+|---|---|---|---|---|---|
+| `stockwatch_app` | restricted runtime role | SELECT/INSERT/UPDATE/DELETE on application tables only | **denied** | **denied** | backend, worker (`DATABASE_URL`) |
+| `stockwatch_migrator` | migration role, schema owner | full (owner) | yes | yes | `deploy.sh` migrations (`MIGRATION_DATABASE_URL`); emergency migration access via `SET ROLE` |
+| `stockwatch_admin` | **elevated RDS master** (`rds_superuser`) | **direct, all tables** (AWS-managed `pg_read_all_data` / `pg_write_all_data` and `rds_superuser` privileges) | via `SET ROLE stockwatch_migrator` (or as database/role administrator) | yes (direct) | administrators only — **never** application containers |
 
 ## Evidence (2026-11-11, production read-only / rolled-back only)
 
@@ -61,17 +89,20 @@ No statement reads, writes or deletes application rows (`INSERT/UPDATE/DELETE/TR
 
 ## Permission matrix
 
-| Capability | `stockwatch_app` | `stockwatch_migrator` | `stockwatch_admin` (master) during transition | `stockwatch_admin` after end-transition |
-|---|---|---|---|---|
-| Connect to `stockwatch` | yes | yes | yes | yes |
-| SELECT/INSERT/UPDATE/DELETE data tables | **yes** | yes (owner) | yes (transition grant) | **no** implicit — `SET ROLE stockwatch_migrator` |
-| TRUNCATE / REFERENCES / TRIGGER | no | yes (owner) | no | via SET ROLE |
-| Read `_prisma_migrations` | **no** | yes (owner) | yes (transition grant) | via SET ROLE |
-| CREATE/ALTER/DROP tables, types | **no** | **yes** (owner, CREATE on schema) | no | via SET ROLE |
-| Run `prisma migrate deploy` | no | **yes** (verified on copy) | yes until end-transition (deploy.sh falls back if `MIGRATION_DATABASE_URL` unset) | via migrator credentials |
-| Create/alter roles, reset passwords | no | no | yes (CREATEROLE, `rds_superuser`) | yes |
-| Database owner / backups / PITR / snapshots (AWS-level) | — | — | unaffected | unaffected |
-| Session limits | 30 conns, statement 30 s, idle-in-tx 60 s | 5 conns, lock_timeout 30 s | unchanged | unchanged |
+Verified on production after the rollout (runtime and migration roles: positive and negative tests; master: catalog privileges).
+
+| Capability | `stockwatch_app` | `stockwatch_migrator` | `stockwatch_admin` (RDS master) |
+|---|---|---|---|
+| Connect to `stockwatch` | yes | yes | yes |
+| SELECT/INSERT/UPDATE/DELETE data tables | **yes** | yes (owner) | **yes, directly** (`rds_superuser` → `pg_read_all_data` / `pg_write_all_data`; no grant from us) |
+| TRUNCATE | **no** | yes (owner) | yes (`rds_superuser`) |
+| Read `_prisma_migrations` | **no** | yes (owner) | yes (`pg_read_all_data`) |
+| CREATE/ALTER/DROP application tables, types | **no** | **yes** (owner, CREATE on schema) | via `SET ROLE stockwatch_migrator` (emergency migration access) |
+| Run `prisma migrate deploy` | no | **yes** (verified in production) | not used for migrations |
+| Create/alter roles, reset passwords | no | no | yes (CREATEROLE, `rds_superuser`) |
+| Database owner / backups / PITR / snapshots (AWS-level) | — | — | unaffected |
+| Session limits | 30 conns, statement 30 s, idle-in-tx 60 s | 5 conns, lock_timeout 30 s | unchanged |
+| Temporary transition grant | — | — | **removed** (2026-11-11 02:46:34Z) |
 
 ## Apply sequence (each numbered phase requires approval)
 
@@ -96,7 +127,7 @@ All commands run on the EC2 host from `~/stockwatch` on branch `feat/db-roles-ro
 
 **Phase 4 — end of transition**
 10. `db-roles.sh --end-transition` (dry run) then `--apply`. The guard refuses while any client session still uses `stockwatch_admin`.
-11. Verify: master user denied implicit table access; break-glass `SET ROLE stockwatch_migrator` works; app healthy.
+11. Verify: no explicit table grants remain for `stockwatch_admin` (transition grant removed); emergency `SET ROLE stockwatch_migrator` works; app healthy. Note: the master user keeps direct data access through AWS-managed `rds_superuser` privileges — this cannot be removed and is expected on RDS.
 
 ## Rollback
 
@@ -114,10 +145,10 @@ All commands run on the EC2 host from `~/stockwatch` on branch `feat/db-roles-ro
 
 | Risk | Mitigation |
 |---|---|
-| App loses table access when ownership moves | transition grant in the same transaction (verified on RDS dry run and on the copy with a live simulated app) |
+| App loses table access when ownership moves | transition grant in the same transaction (verified on the copy with a live simulated app). On RDS the master kept access via `rds_superuser` anyway, so the grant proved redundant there; it was removed in Phase 4 |
 | Locks during ownership transfer | sub-second transaction on 4 small tables; `lock_timeout 5s` aborts and rolls back rather than blocking traffic |
 | `REVOKE ALL ON DATABASE … FROM PUBLIC` | only `rdsadmin` (superuser, unaffected) and `stockwatch_admin` (explicit grant) can log in today |
-| Break-glass access changes | documented: master uses `SET ROLE stockwatch_migrator`; master keeps CREATEROLE, DB ownership and AWS-level recovery |
+| Master account remains elevated | by design on RDS: direct data access via `rds_superuser`, plus CREATEROLE, DB ownership and AWS-level recovery; `SET ROLE stockwatch_migrator` for emergency schema/migration work. Control: rotate the master password to a long random value and keep it out of application configuration (separate hardening task) |
 | Credential handling | SCRAM verifiers computed locally; plaintext only in `.env` (600), as today; `.env.pre-roles` kept until sign-off then removed |
 | CI deploy path still broken (SSH restricted) | Phase 3 uses the same on-host `deploy.sh` procedure as the 2026-11-11 deployment |
 | `CREATE` + `ALTER ROLE … PASSWORD` both set the verifier | redundant, harmless; cosmetic follow-up |

@@ -1,19 +1,19 @@
 # Database Roles — Runtime vs Migration Privileges
 
-**Status:** IMPLEMENTED and tested on isolated PostgreSQL 16 (RDS-like permission model). **Not applied to production** — no production users or credentials have been created or changed.
+**Status:** APPLIED to production on 2026-11-11 (`docs/runbooks/db-roles-rollout.md`). Backend and worker connect as `stockwatch_app`; migrations run as `stockwatch_migrator`; the temporary transition grant has been removed.
 
 ## Why
 
-On 2026-11-10 the application (connected as the RDS master user `stockwatch_admin`) went down when the master password changed under the running containers. The master user also gives the application full DDL rights. Separating identities fixes both:
+On 2026-11-10 the application (connected as the RDS master user `stockwatch_admin`) went down when the master password changed under the running containers. The master user also gives the application full DDL rights. Separating identities fixes both for the application — the RDS master account itself remains elevated (see below):
 
 | Role | Login | Privileges | Used by |
 |---|---|---|---|
-| `stockwatch_admin` (RDS master) | yes | owns the database, `CREATEROLE` | break-glass, role management (`db-roles.sh`) only |
+| `stockwatch_admin` (RDS master) | yes | **elevated, AWS-managed**: member of `rds_superuser` (→ `pg_read_all_data`, `pg_write_all_data`), owns the database, `CREATEROLE`; **direct read/write/TRUNCATE on all tables**; schema changes via `SET ROLE stockwatch_migrator` | administrators only (role management, emergency access) — never application containers |
 | `stockwatch_migrator` | yes | owns all schema objects; `USAGE, CREATE` on `public`; `lock_timeout 30s`; ≤ 5 connections | `deploy.sh` → `prisma migrate deploy` (`MIGRATION_DATABASE_URL`) |
 | `stockwatch_app` | yes | `SELECT, INSERT, UPDATE, DELETE` on tables, `USAGE, SELECT` on sequences (incl. future objects via default privileges); **no** DDL, `TRUNCATE`, `REFERENCES`, `TRIGGER`, migration ledger; `statement_timeout 30s`, `idle_in_transaction_session_timeout 60s`; ≤ 30 connections | backend and worker (`DATABASE_URL`) |
 | `PUBLIC` | — | `CONNECT`/`TEMP` on the database revoked; no `CREATE` on `public` | — |
 
-Rotating the master password no longer affects the application. Physical replicas, snapshots and PITR restores carry the roles and their SCRAM verifiers, so DR instances accept the same application credentials.
+Rotating the master password no longer affects the application. It does **not** make the master account restricted: on RDS its data access comes from AWS-managed roles that cannot be revoked, so it must be protected as a high-privilege credential. Physical replicas, snapshots and PITR restores carry the roles and their SCRAM verifiers, so DR instances accept the same application credentials.
 
 ## Components
 
@@ -60,9 +60,11 @@ Live RDS catalog facts (read-only `SELECT`s):
 | Applied migrations | `20261106000000_init` | migrator: `migrate status` up to date, `migrate deploy` permitted |
 | Data | inventory 5, stock_checks 6, stock_alerts 7 | identical row counts + content hashes before/after the role change on the copy |
 
-**Operational consequence (verified):** after the ownership transfer the master user has no implicit table access (its membership in `stockwatch_migrator` is `INHERIT FALSE`). Break-glass reads/writes require `SET ROLE stockwatch_migrator;` first. This is intentional (no silent superuser-style access) and must be in the runbook.
+**Correction (2026-11-11, verified on production RDS):** an earlier version of this section said the master user would have no implicit table access after the ownership transfer and would need `SET ROLE stockwatch_migrator` to read or write data. That was observed only on the isolated emulation (a plain PostgreSQL `CREATEROLE` user) and is **false on RDS**: `stockwatch_admin` is a member of the AWS-managed `rds_superuser` role, which inherits `pg_read_all_data` and `pg_write_all_data` (granted by `rdsadmin`) and itself holds SELECT/INSERT/UPDATE/DELETE/TRUNCATE on application tables. The master therefore keeps **direct data access**; this cannot be revoked and was not changed. `SET ROLE stockwatch_migrator` (membership `INHERIT FALSE, SET TRUE`) is the **emergency migration-access mechanism** — acting as the schema owner for DDL and migration work — not a prerequisite for data access. The temporary transition grant to the master was removed by `--end-transition` (no explicit `stockwatch_admin` entries remain in table ACLs).
 
-## Production rollout plan (each step requires approval)
+## Production rollout plan (original draft — superseded)
+
+The executed procedure, evidence and corrections are in `docs/runbooks/db-roles-rollout.md`. The draft below is kept for history.
 
 Prerequisite: the backend image containing `DB_BOOTSTRAP_SCHEMA` gating (this branch) is deployed via PR → `main` → CI. The currently deployed `1cc73a2` backend runs DDL at startup; as `stockwatch_app` that DDL would fail (caught and logged) — functional but noisy.
 
