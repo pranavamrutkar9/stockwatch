@@ -13,7 +13,8 @@ set -Euo pipefail
 # The host itself is tested the same way (it must keep working: AWS CLI).
 #
 # Expected with HttpPutResponseHopLimit = 1: host REACHABLE, every container BLOCKED.
-# Exit 0 only if no container can reach the credential path.
+# Exit 0 only if every probe ran and no container can reach the credential path; exit 1 if any
+# container can; exit 3 if any probe result is unrecognized (cannot conclude isolation).
 # ==========================================================================
 NET="${STOCKWATCH_NETWORK:-stockwatch-network}"
 PROBE_IMAGE="${PROBE_IMAGE:-node:22-bookworm}"
@@ -26,7 +27,7 @@ const req=(o,b)=>new Promise(r=>{const q=http.request({host:"169.254.169.254",ti
  const c=await req({method:"GET",path:"/latest/meta-data/iam/security-credentials/",headers:{"X-aws-ec2-metadata-token":t.body}});
  console.log(`token=200 credential_path=${c.code}${c.code===200?" role="+c.body.trim().split("\n")[0]:""}`);
 })();'
-reachable=0
+reachable=0; unknown=0
 printf '%-28s %s\n' "host (EC2)" "$(t=$(curl -s -m 3 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' -o /dev/stdout -w '' 2>/dev/null); if [[ -n "$t" ]]; then echo "token=200 credential_path=$(curl -s -m 3 -o /dev/null -w '%{http_code}' -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/iam/security-credentials/)"; else echo "token=failed"; fi)"
 for c in $(docker ps --format '{{.Names}}' | grep '^stockwatch-' | sort); do
   if docker exec "$c" sh -c 'command -v node >/dev/null' 2>/dev/null; then
@@ -35,11 +36,14 @@ for c in $(docker ps --format '{{.Names}}' | grep '^stockwatch-' | sort); do
     out="$(docker run --rm --network "$NET" "$PROBE_IMAGE" node -e "$NODE_PROBE" 2>&1 | tail -1)"; how="probe on ${NET}"
   fi
   [[ "$out" == *"credential_path=200"* ]] && reachable=$((reachable + 1))
+  [[ "$out" =~ ^token= ]] || { unknown=$((unknown + 1)); out="UNKNOWN (probe failed): ${out:0:40}"; }
   printf '%-28s %-58s [%s]\n' "$c" "$out" "$how"
 done
 out="$(docker run --rm --network bridge "$PROBE_IMAGE" node -e "$NODE_PROBE" 2>&1 | tail -1)"
 [[ "$out" == *"credential_path=200"* ]] && reachable=$((reachable + 1))
+[[ "$out" =~ ^token= ]] || { unknown=$((unknown + 1)); out="UNKNOWN (probe failed): ${out:0:40}"; }
 printf '%-28s %-58s [%s]\n' "any container (bridge)" "$out" "probe on default bridge"
 echo
-if [[ "$reachable" -eq 0 ]]; then echo "RESULT: containers CANNOT reach instance-role credentials (isolated)"; exit 0; fi
-echo "RESULT: ${reachable} container context(s) CAN reach instance-role credentials (hop limit too high)"; exit 1
+if [[ "$reachable" -gt 0 ]]; then echo "RESULT: ${reachable} container context(s) CAN reach instance-role credentials (hop limit too high)"; exit 1; fi
+if [[ "$unknown" -gt 0 ]]; then echo "RESULT: INCONCLUSIVE - ${unknown} probe(s) failed; isolation not proven"; exit 3; fi
+echo "RESULT: containers CANNOT reach instance-role credentials (isolated)"; exit 0

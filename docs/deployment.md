@@ -1,5 +1,7 @@
 # StockWatch Deployment & Operations Runbook
 
+> **Generic deployment guide.** For the procedure actually used in production (on-host `deploy.sh` from `~/stockwatch-deploy`, RDS targets, separated database credentials) see [`docs/assessment/07-failover-and-failback.md`](assessment/07-failover-and-failback.md) and [`docs/assessment/04-security-and-iam.md`](assessment/04-security-and-iam.md).
+
 ## 1. Overview
 This runbook describes the automated deployment, configuration, and rollback lifecycle for StockWatch on a cloud Ubuntu virtual machine (AWS EC2 or Azure VM) utilizing Docker Compose and GitHub Container Registry (GHCR).
 

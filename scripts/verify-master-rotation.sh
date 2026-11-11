@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Euo pipefail
+# Never trace this script: xtrace would print passwords passed between functions.
+case $- in *x*) set +x; echo "NOTE: shell tracing disabled for this script (credentials)." >&2 ;; esac
 # ==========================================================================
 # Post-rotation verification for the RDS master password (stockwatch_admin).
 # Run AFTER the password was changed in the RDS console. Nothing secret is
@@ -27,29 +29,44 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 [[ -n "$SINCE" ]] || { echo "ERROR: --since <ISO-8601 UTC time just before the rotation> is required" >&2; exit 2; }
+# Strict UTC format: the restart check compares timestamps as strings.
+[[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { echo "ERROR: --since must be UTC like 2026-11-11T08:00:00Z" >&2; exit 2; }
 CA=/home/ubuntu/ap-southeast-2-bundle.pem
 HOST=stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com
 PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); echo "  PASS  $*"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL  $*"; }
 
-# psql_as <user> <password-from-stdin-var-name>: SQL as $3; prints result or error class only
+# psql_as <user> <password> <sql>: read-only session (verify-full TLS). The password reaches psql only
+# through the environment (never argv). Prints the single-line result, or one of:
+#   AUTH_FAILED              - server reachable, credential rejected
+#   CONN_FAILED: <reason>    - no authentication result (network, TLS, DNS, timeout, docker)
 psql_as() {
-  local user="$1" pw="$2" sql="$3"
-  PGPASSWORD="$pw" docker run --rm -i -e PGPASSWORD -e PGSSLMODE=verify-full -e PGSSLROOTCERT=/ca.pem -e PGAPPNAME=rotation-verify \
-    -e PGOPTIONS="-c default_transaction_read_only=on" -v "$CA:/ca.pem:ro" postgres:16-alpine \
-    psql -h "$HOST" -U "$user" -d stockwatch -X -q -t -A -c "$sql" 2>&1 | sed -E 's/password authentication failed.*/AUTH_FAILED/; s/postgres(ql)?:\/\/[^ ]*/<redacted>/g' | tail -1
+  local user="$1" pw="$2" sql="$3" out
+  out="$(PGPASSWORD="$pw" PGCONNECT_TIMEOUT=10 docker run --rm -i -e PGPASSWORD -e PGCONNECT_TIMEOUT -e PGSSLMODE=verify-full -e PGSSLROOTCERT=/ca.pem \
+    -e PGAPPNAME=rotation-verify -e PGOPTIONS="-c default_transaction_read_only=on" -v "$CA:/ca.pem:ro" postgres:16-alpine \
+    psql -h "$HOST" -U "$user" -d stockwatch -X -q -t -A -c "$sql" 2>&1 | tail -1)"
+  if [[ "$out" == *"password authentication failed"* ]]; then echo "AUTH_FAILED"
+  elif [[ "$out" == *"psql: error:"* || "$out" == *"docker:"* || "$out" == *"Error response from daemon"* || -z "$out" ]]; then
+    echo "CONN_FAILED: $(sed -E 's/postgres(ql)?:\/\/[^ ]*/<redacted>/g; s/.*(timeout expired|Connection timed out|could not translate host name|certificate verify failed|Connection refused|No route to host|Error response from daemon).*/\1/' <<<"${out:-no output}" | cut -c1-60)"
+  else echo "$out"; fi
 }
 url_pw() { python3 -c 'import sys;from urllib.parse import urlsplit,unquote;l=[x for x in open(sys.argv[1]) if x.startswith(sys.argv[2]+"=")][0];print(unquote(urlsplit(l.split("=",1)[1].strip().strip(chr(34))).password),end="")' "$1" "$2"; }
 
 echo "1. RDS event"
 ev="$(PATH=$HOME/.local/bin:$PATH aws rds describe-events --region ap-southeast-2 --source-type db-instance --source-identifier stockwatch-primary-db --start-time "$SINCE" --query "Events[?contains(Message,'master credentials')].Date" --output text 2>&1)"
-[[ "$ev" =~ 20[0-9]{2}- ]] && ok "RDS event 'Reset master credentials' at ${ev}" || bad "no 'Reset master credentials' event since ${SINCE} (${ev:0:80})"
+ev_safe="$(sed -E 's/[0-9]{12}/<account>/g' <<<"$ev")"   # AWS error texts contain account IDs
+[[ "$ev" =~ 20[0-9]{2}- ]] && ok "RDS event 'Reset master credentials' at ${ev_safe}" || bad "no 'Reset master credentials' event since ${SINCE} (${ev_safe:0:80})"
 
 echo "2. Old master credential"
 if [[ -f .env.pre-roles ]]; then
   r="$(psql_as stockwatch_admin "$(url_pw .env.pre-roles DATABASE_URL)" 'SELECT 1')"
-  [[ "$r" == *AUTH_FAILED* ]] && ok "old master credential rejected" || bad "old master credential NOT rejected (${r:0:60})"
+  case "$r" in
+    AUTH_FAILED) ok "old master credential rejected (authentication failed)" ;;
+    CONN_FAILED*) bad "old credential could not be tested - ${r} (connection problem, not an authentication result)" ;;
+    1) bad "old master credential still ACCEPTED" ;;
+    *) bad "old master credential not verified (unexpected result: ${r:0:60})" ;;
+  esac
 else
   bad ".env.pre-roles not found (old credential cannot be tested)"
 fi
@@ -58,7 +75,11 @@ echo "3. New master credential (hidden prompt; not echoed or stored)"
 read -r -s -p "  New RDS master password: " NEWPW; echo
 r="$(psql_as stockwatch_admin "$NEWPW" "SELECT current_user || ' ssl=' || (SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()) || ' rds_superuser=' || pg_has_role('rds_superuser','MEMBER')")"
 unset NEWPW
-[[ "$r" == "stockwatch_admin ssl=true rds_superuser=true" ]] && ok "new master credential works ($r)" || bad "new master credential failed (${r:0:60})"
+case "$r" in
+  "stockwatch_admin ssl=true rds_superuser=true") ok "new master credential works ($r)" ;;
+  AUTH_FAILED) bad "new master credential REJECTED (authentication failed)" ;;
+  *) bad "new master credential not verified (${r:0:60})" ;;
+esac
 
 echo "4. Application and migration credentials"
 r="$(psql_as stockwatch_app "$(url_pw .env DATABASE_URL)" 'SELECT current_user')"; [[ "$r" == stockwatch_app ]] && ok "stockwatch_app works" || bad "stockwatch_app: ${r:0:60}"

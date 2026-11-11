@@ -83,6 +83,25 @@ psql_on postgres <<<"CREATE DATABASE restored2" >/dev/null
 out="$(TARGET_DATABASE_URL="$T/restored2" bash "$B/pg-restore.sh" --backup "$WORK/tampered" --confirm "RESTORE-${TODAY}" --docker-network "$NET" 2>&1 || true)"
 grep -q 'checksum mismatch' <<<"$out" && ok "pg restore: tampered dump refused (checksum)" || bad "tamper not detected"
 
+echo "== Interrupted backups (SIGTERM / Ctrl-C) leave nothing behind"
+for sig in TERM INT; do
+  for delay in 0.7 2.0; do
+    D="$WORK/pg-int-$sig-$delay"; mkdir -p "$D"
+    if [[ "$sig" == TERM ]]; then
+      SOURCE_DATABASE_URL="$SRC" bash "$B/pg-backup-verify.sh" --dest "$D" --docker-network "$NET" >/dev/null 2>&1 & bp=$!
+      sleep "$delay"; kill -TERM "$bp" 2>/dev/null; rc=0; wait "$bp" || rc=$?
+    else   # foreground SIGINT, as delivered by Ctrl-C (background jobs ignore SIGINT)
+      rc=0; SOURCE_DATABASE_URL="$SRC" timeout -s INT "$delay" bash "$B/pg-backup-verify.sh" --dest "$D" --docker-network "$NET" >/dev/null 2>&1 || rc=$?
+    fi
+    sleep 1
+    left="$(docker ps -aq --filter name=sw-bv- | wc -l)$(docker network ls -q --filter name=sw-bv-net | wc -l)"
+    pub="$(find "$D" -mindepth 1 -maxdepth 1 -name '20*Z' | wc -l)"; inc="$(find "$D" -mindepth 1 -maxdepth 1 -name '.incomplete-*' | wc -l)"
+    if [[ "$rc" -ne 0 && "$pub" == 0 && "$inc" == 0 && "$left" == 00 ]]; then ok "SIG$sig after ${delay}s: non-zero exit, nothing published, no .incomplete, no leaked container/network"
+    else bad "SIG$sig after ${delay}s: rc=$rc published=$pub incomplete=$inc leaked(containers,networks)=$left"; fi
+    docker ps -aq --filter name=sw-bv- | xargs -r docker rm -fv >/dev/null 2>&1 || true; docker network ls -q --filter name=sw-bv-net | xargs -r docker network rm >/dev/null 2>&1 || true
+  done
+done
+
 echo "== Redis"
 r() { docker exec -i "$RD" sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli "$@"' _ "$@"; }
 for _ in $(seq 1 20); do [[ "$(r PING 2>/dev/null)" == PONG ]] && break; sleep 0.5; done

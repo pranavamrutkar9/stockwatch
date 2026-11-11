@@ -104,7 +104,22 @@ Verified on production after the rollout (runtime and migration roles: positive 
 | Session limits | 30 conns, statement 30 s, idle-in-tx 60 s | 5 conns, lock_timeout 30 s | unchanged |
 | Temporary transition grant | — | — | **removed** (2026-11-11 02:46:34Z) |
 
-## Apply sequence (each numbered phase requires approval)
+## Supplying the master credential for administrative commands
+
+Since the rollout, `.env` holds only `stockwatch_app` and `stockwatch_migrator`. `db-roles.sh` (and `pg-restore.sh`) need the RDS master credential; supply it at the moment of use from the password manager, never from a file:
+
+```bash
+read -r -s -p 'RDS master password: ' PGPW; echo
+export ADMIN_DATABASE_URL="postgresql://stockwatch_admin:${PGPW}@stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com:5432/stockwatch?sslmode=require"
+unset PGPW
+infrastructure/deployment/db-roles.sh --end-transition --ca-file /home/ubuntu/ap-southeast-2-bundle.pem \
+  --confirm-host stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com   # dry run
+unset ADMIN_DATABASE_URL
+```
+
+The password is alphanumeric (no URL escaping), is not echoed, does not enter shell history, and reaches `psql` only as `PGPASSWORD` in the container environment. Logical backups do **not** need it — they run as `stockwatch_migrator` (manual runs; no schedule is configured) (see [`docs/assessment/05-database-backup-and-recovery.md`](../assessment/05-database-backup-and-recovery.md)).
+
+## Apply sequence (as executed on 2026-11-11)
 
 All commands run on the EC2 host from `~/stockwatch` on branch `feat/db-roles-rollout`; nothing is printed that contains a secret.
 
@@ -116,7 +131,7 @@ All commands run on the EC2 host from `~/stockwatch` on branch `feat/db-roles-ro
 3. Generate two 64-hex passwords; write `APP_DB_PASSWORD` / `MIGRATOR_DB_PASSWORD` and the prepared URLs into a staged file `/home/ubuntu/stockwatch/.env.next` (mode 600; copy of `.env` with `DATABASE_URL` user → `stockwatch_app`, new `MIGRATION_DATABASE_URL` user → `stockwatch_migrator`, same host/TLS parameters). `.env` itself is not changed.
 
 **Phase 2 — database change (zero downtime)**
-4. Dry run: `ADMIN_DATABASE_URL=<.env DATABASE_URL> APP_DB_PASSWORD=… MIGRATOR_DB_PASSWORD=… infrastructure/deployment/db-roles.sh --transfer-ownership --transition-grant --ca-file … --confirm-host stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com`
+4. Dry run: `ADMIN_DATABASE_URL=<master URL> APP_DB_PASSWORD=… MIGRATOR_DB_PASSWORD=… infrastructure/deployment/db-roles.sh --transfer-ownership --transition-grant --ca-file … --confirm-host stockwatch-primary-db.cns8kouwop3n.ap-southeast-2.rds.amazonaws.com`
 5. Apply: same command plus `--apply` (one transaction, sub-second; aborts after 5 s if a lock cannot be obtained).
 6. Verify: app keeps 200 throughout (availability probe); TLS login probes `SELECT 1` as `stockwatch_app` and `stockwatch_migrator`; `prisma migrate status` as migrator → up to date; app DML in a rolled-back transaction; app denied on `_prisma_migrations` and DDL.
 

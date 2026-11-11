@@ -44,16 +44,21 @@ PY
 TS="$(date -u +%Y%m%dT%H%M%SZ)"; OUT="${DEST}/.incomplete-${TS}"; RESULT=""
 mkdir -p "$DEST" && chmod 700 "$DEST"; mkdir -m 700 "$OUT"
 RUN_ID="$(date +%s)-$$"; VNET="sw-bv-net-${RUN_ID}"; VPG="sw-bv-pg-${RUN_ID}"
-finalize_backup() { # called on every exit: publish only verified backups
-  local rc=$?
+finalize_backup() { # finalize_backup <exit code>: publish only verified backups (called from the EXIT trap)
+  local rc="$1"
   if [[ "${OUT:-}" == *"/.incomplete-"* && -d "$OUT" ]]; then
     if [[ "$rc" -eq 0 && "${RESULT:-}" == VERIFIED ]]; then mv "$OUT" "${DEST}/${TS}" && OUT="${DEST}/${TS}"
     else mv "$OUT" "${DEST}/${TS}.FAILED" 2>/dev/null && echo "Backup NOT published; kept for diagnosis: ${DEST}/${TS}.FAILED" >&2; fi
   fi
   return "$rc"
 }
-cleanup() { finalize_backup; local rc=$?; docker rm -fv "$VPG" >/dev/null 2>&1 || true; docker network rm "$VNET" >/dev/null 2>&1 || true; exit "$rc"; }
+# errexit must not abort cleanup half-way (finalize_backup returns the failing code by design).
+cleanup() { local rc=$?; set +e; finalize_backup "$rc"; docker rm -fv "$VPG" >/dev/null 2>&1; docker network rm "$VNET" >/dev/null 2>&1; exit "$rc"; }
 trap cleanup EXIT
+# On SIGTERM/SIGINT exit via the EXIT trap only after the running docker command returns, so a
+# verify container being created at that moment is still removed (no leaked containers).
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 src_args=(run --rm -i --user "$(id -u):$(id -g)" -e PGPASSWORD="$SRC_PASSWORD" -e PGSSLMODE="$SRC_SSLMODE"
   -e PGHOST="$SRC_HOST" -e PGPORT="$SRC_PORT" -e PGUSER="$SRC_USER" -e PGDATABASE="$SRC_DB" -v "$OUT:/out")

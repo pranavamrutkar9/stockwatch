@@ -35,15 +35,19 @@ rcli() { docker exec -i "$CONTAINER" sh -c 'if [ -n "$REDIS_PASSWORD" ]; then ex
 TS="$(date -u +%Y%m%dT%H%M%SZ)"; OUT="${DEST}/.incomplete-${TS}"; RESULT=""
 mkdir -p "$DEST" && chmod 700 "$DEST"; mkdir -m 700 "$OUT"
 VERIFY="sw-rv-${TS,,}-$$"
-finalize_backup() { # called on every exit: publish only verified backups
-  local rc=$?
+finalize_backup() { # finalize_backup <exit code>: publish only verified backups (called from the EXIT trap)
+  local rc="$1"
   if [[ "${OUT:-}" == *"/.incomplete-"* && -d "$OUT" ]]; then
     if [[ "$rc" -eq 0 && "${RESULT:-}" == VERIFIED ]]; then mv "$OUT" "${DEST}/${TS}" && OUT="${DEST}/${TS}"
     else mv "$OUT" "${DEST}/${TS}.FAILED" 2>/dev/null && echo "Backup NOT published; kept for diagnosis: ${DEST}/${TS}.FAILED" >&2; fi
   fi
   return "$rc"
 }
-trap 'finalize_backup; rc=$?; docker rm -fv "$VERIFY" >/dev/null 2>&1 || true; exit $rc' EXIT
+# errexit must not abort cleanup half-way (finalize_backup returns the failing code by design).
+trap 'rc=$?; set +e; finalize_backup "$rc"; docker rm -fv "$VERIFY" >/dev/null 2>&1; exit $rc' EXIT
+# On SIGTERM/SIGINT exit via the EXIT trap after the running docker command returns (no leaked containers).
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 [[ "$(rcli PING)" == PONG ]] || { echo "ERROR: cannot authenticate to ${CONTAINER}." >&2; exit 1; }
 before="$(rcli LASTSAVE)"; rcli BGSAVE >/dev/null
