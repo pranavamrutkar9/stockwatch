@@ -11,7 +11,8 @@ set -Eeuo pipefail
 #
 #   SOURCE_DATABASE_URL=... pg-backup-verify.sh [--ca-file PEM] [--dest DIR] [--keep N]
 #                                               [--docker-network NET]
-# Output: <dest>/<UTC timestamp>/{stockwatch.dump,stockwatch.dump.sha256,manifest.txt}
+# Output: <dest>/<UTC timestamp>/{stockwatch.dump,stockwatch.dump.sha256,manifest.txt}, published only
+# when verified; failed runs are kept as <dest>/<UTC timestamp>.FAILED and never count for retention.
 # ==========================================================================
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HASH_SQL="$(cat "${ROOT}/packages/database/sql/content-hash.sql")"
@@ -40,10 +41,18 @@ for k, v in {"SRC_HOST": u.hostname, "SRC_PORT": str(u.port or 5432), "SRC_USER"
 PY
 )"
 
-TS="$(date -u +%Y%m%dT%H%M%SZ)"; OUT="${DEST}/${TS}"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"; OUT="${DEST}/.incomplete-${TS}"; RESULT=""
 mkdir -p "$DEST" && chmod 700 "$DEST"; mkdir -m 700 "$OUT"
 RUN_ID="$(date +%s)-$$"; VNET="sw-bv-net-${RUN_ID}"; VPG="sw-bv-pg-${RUN_ID}"
-cleanup() { local rc=$?; docker rm -fv "$VPG" >/dev/null 2>&1 || true; docker network rm "$VNET" >/dev/null 2>&1 || true; exit "$rc"; }
+finalize_backup() { # called on every exit: publish only verified backups
+  local rc=$?
+  if [[ "${OUT:-}" == *"/.incomplete-"* && -d "$OUT" ]]; then
+    if [[ "$rc" -eq 0 && "${RESULT:-}" == VERIFIED ]]; then mv "$OUT" "${DEST}/${TS}" && OUT="${DEST}/${TS}"
+    else mv "$OUT" "${DEST}/${TS}.FAILED" 2>/dev/null && echo "Backup NOT published; kept for diagnosis: ${DEST}/${TS}.FAILED" >&2; fi
+  fi
+  return "$rc"
+}
+cleanup() { finalize_backup; local rc=$?; docker rm -fv "$VPG" >/dev/null 2>&1 || true; docker network rm "$VNET" >/dev/null 2>&1 || true; exit "$rc"; }
 trap cleanup EXIT
 
 src_args=(run --rm -i --user "$(id -u):$(id -g)" -e PGPASSWORD="$SRC_PASSWORD" -e PGSSLMODE="$SRC_SSLMODE"
@@ -94,8 +103,11 @@ chmod 600 "$OUT"/*
 cat "$OUT/manifest.txt"
 
 # Retention (only verified backup directories are counted; never deletes the current one).
-mapfile -t old < <(find "$DEST" -mindepth 1 -maxdepth 1 -type d -name '20*Z' | sort -r | tail -n +"$((KEEP + 1))")
-for d in "${old[@]}"; do [[ "$d" != "$OUT" ]] && rm -rf "$d" && echo "retention: removed $(basename "$d")"; done
 
-[[ "$RESULT" == VERIFIED ]] || { echo "ERROR: backup verification FAILED: ${OUT}" >&2; exit 1; }
+[[ "$RESULT" == VERIFIED ]] || { echo "ERROR: backup verification FAILED" >&2; exit 1; }
+mv "$OUT" "${DEST}/${TS}" && OUT="${DEST}/${TS}"
+# Retention runs only after a VERIFIED backup and counts only VERIFIED backups; failed
+# runs (<ts>.FAILED) and in-progress runs (.incomplete-*) never displace good backups.
+mapfile -t verified < <(for d in "$DEST"/20*Z; do [[ -d "$d" ]] && grep -q '^verification=VERIFIED' "$d/manifest.txt" 2>/dev/null && echo "$d"; done | sort -r)
+for d in "${verified[@]:$KEEP}"; do rm -rf "$d" && echo "retention: removed $(basename "$d")"; done
 echo "Backup verified: ${OUT}"

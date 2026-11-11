@@ -32,10 +32,18 @@ persistent_keys() { # persistent_keys <container> [auth:true|false]
     redis-cli --scan | while read -r k; do [ "$(redis-cli TTL "$k")" = "-1" ] && echo "$k"; done; true' "${2:-true}" | sort
 }
 rcli() { docker exec -i "$CONTAINER" sh -c 'if [ -n "$REDIS_PASSWORD" ]; then export REDISCLI_AUTH="$REDIS_PASSWORD"; fi; redis-cli "$@"' _ "$@"; }
-TS="$(date -u +%Y%m%dT%H%M%SZ)"; OUT="${DEST}/${TS}"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"; OUT="${DEST}/.incomplete-${TS}"; RESULT=""
 mkdir -p "$DEST" && chmod 700 "$DEST"; mkdir -m 700 "$OUT"
 VERIFY="sw-rv-${TS,,}-$$"
-trap 'docker rm -fv "$VERIFY" >/dev/null 2>&1 || true' EXIT
+finalize_backup() { # called on every exit: publish only verified backups
+  local rc=$?
+  if [[ "${OUT:-}" == *"/.incomplete-"* && -d "$OUT" ]]; then
+    if [[ "$rc" -eq 0 && "${RESULT:-}" == VERIFIED ]]; then mv "$OUT" "${DEST}/${TS}" && OUT="${DEST}/${TS}"
+    else mv "$OUT" "${DEST}/${TS}.FAILED" 2>/dev/null && echo "Backup NOT published; kept for diagnosis: ${DEST}/${TS}.FAILED" >&2; fi
+  fi
+  return "$rc"
+}
+trap 'finalize_backup; rc=$?; docker rm -fv "$VERIFY" >/dev/null 2>&1 || true; exit $rc' EXIT
 
 [[ "$(rcli PING)" == PONG ]] || { echo "ERROR: cannot authenticate to ${CONTAINER}." >&2; exit 1; }
 before="$(rcli LASTSAVE)"; rcli BGSAVE >/dev/null
@@ -67,7 +75,10 @@ if diff -q "$OUT/keys.txt" "$OUT/restored-keys.txt" >/dev/null && [[ "$restored_
 rm -f "$OUT/restored-keys.txt"; chmod 600 "$OUT"/*
 cat "$OUT/manifest.txt"
 
-mapfile -t old < <(find "$DEST" -mindepth 1 -maxdepth 1 -type d -name '20*Z' | sort -r | tail -n +"$((KEEP + 1))")
-for d in "${old[@]}"; do [[ "$d" != "$OUT" ]] && rm -rf "$d" && echo "retention: removed $(basename "$d")"; done
-[[ "$RESULT" == VERIFIED ]] || { echo "ERROR: Redis backup verification FAILED: ${OUT}" >&2; exit 1; }
+[[ "$RESULT" == VERIFIED ]] || { echo "ERROR: Redis backup verification FAILED" >&2; exit 1; }
+mv "$OUT" "${DEST}/${TS}" && OUT="${DEST}/${TS}"
+# Retention runs only after a VERIFIED backup and counts only VERIFIED backups; failed
+# runs (<ts>.FAILED) and in-progress runs (.incomplete-*) never displace good backups.
+mapfile -t verified < <(for d in "$DEST"/20*Z; do [[ -d "$d" ]] && grep -q '^verification=VERIFIED' "$d/manifest.txt" 2>/dev/null && echo "$d"; done | sort -r)
+for d in "${verified[@]:$KEEP}"; do rm -rf "$d" && echo "retention: removed $(basename "$d")"; done
 echo "Backup verified: ${OUT}"

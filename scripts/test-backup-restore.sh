@@ -47,7 +47,24 @@ out="$(SOURCE_DATABASE_URL="$SRC" bash "$B/pg-backup-verify.sh" --dest "$WORK/pg
   && grep -q 'verification=VERIFIED' <<<"$out" && ok "pg backup created and verified by isolated restore" || { bad "pg backup"; tail -5 <<<"$out"; }
 grep -q 'inventory_items rows=25' <<<"$out" && grep -q 'stock_alerts rows=10' <<<"$out" && ok "manifest records row counts from the dump snapshot" || bad "manifest content"
 grep -qF "$PGPW" <<<"$out" && bad "password printed" || ok "no password in output"
-BK="$(find "$WORK/pg" -mindepth 1 -maxdepth 1 -type d | head -1)"
+BK="$(find "$WORK/pg" -mindepth 1 -maxdepth 1 -type d -name '20*Z' | head -1)"
+[[ -z "$(find "$WORK/pg" -mindepth 1 -maxdepth 1 -name '.incomplete-*')" ]] && ok "no .incomplete-* directory left after success" || bad "incomplete dir left behind"
+
+echo "== Backup failure handling and retention"
+rc=0; out="$(SOURCE_DATABASE_URL="postgresql://postgres:wrong-password@${PG}:5432/stockwatch" bash "$B/pg-backup-verify.sh" --dest "$WORK/pgfail" --docker-network "$NET" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] && ok "pg backup with bad credentials exits non-zero (rc=$rc)" || bad "bad-credential backup exited 0"
+[[ -z "$(find "$WORK/pgfail" -mindepth 1 -maxdepth 1 -type d -name '20*Z' 2>/dev/null)" ]] && ok "failed backup is not published as a backup" || bad "failed backup published"
+ls -d "$WORK"/pgfail/*.FAILED >/dev/null 2>&1 && ok "failed run kept as <ts>.FAILED for diagnosis" || bad "no .FAILED directory"
+grep -qF "wrong-password" <<<"$out" && bad "credential printed on failure" || ok "no credential printed on failure"
+sleep 1; SOURCE_DATABASE_URL="$SRC" bash "$B/pg-backup-verify.sh" --dest "$WORK/pgret" --docker-network "$NET" --keep 1 >/dev/null 2>&1
+sleep 1; SOURCE_DATABASE_URL="$SRC" bash "$B/pg-backup-verify.sh" --dest "$WORK/pgret" --docker-network "$NET" --keep 1 >/dev/null 2>&1
+n="$(find "$WORK/pgret" -mindepth 1 -maxdepth 1 -type d -name '20*Z' | wc -l)"; [[ "$n" == 1 ]] && ok "retention --keep 1: exactly 1 verified backup kept" || bad "retention kept $n"
+KEPT="$(find "$WORK/pgret" -mindepth 1 -maxdepth 1 -type d -name '20*Z')"
+sleep 1; SOURCE_DATABASE_URL="postgresql://postgres:wrong-password@${PG}:5432/stockwatch" bash "$B/pg-backup-verify.sh" --dest "$WORK/pgret" --docker-network "$NET" --keep 1 >/dev/null 2>&1 || true
+[[ -d "$KEPT" ]] && ok "a failed run does NOT remove the last good backup (retention defect regression)" || bad "failed run deleted the last good backup"
+sleep 1; SOURCE_DATABASE_URL="$SRC" bash "$B/pg-backup-verify.sh" --dest "$WORK/pgret" --docker-network "$NET" --keep 2 >/dev/null 2>&1
+n="$(for d in "$WORK"/pgret/20*Z; do grep -q '^verification=VERIFIED' "$d/manifest.txt" 2>/dev/null && echo "$d"; done | wc -l)"
+[[ -d "$KEPT" && "$n" == 2 ]] && ok "failed run + successful run with --keep 2: both good backups kept (failed run not counted)" || bad "retention counted a failed run: good backups kept=$n, previous good kept=$([[ -d "$KEPT" ]] && echo yes || echo no)"
 [[ "$(stat -c %a "$BK")" == 700 && "$(stat -c %a "$BK/stockwatch.dump")" == 600 ]] && ok "backup dir 700 / files 600" || bad "backup permissions"
 
 psql_on stockwatch <<<"CREATE DATABASE restored; CREATE DATABASE nonempty;" >/dev/null 2>&1 || true
@@ -75,7 +92,9 @@ out="$(bash "$B/redis-backup.sh" --container "$RD" --volume "$VOL" --dest "$WORK
   && grep -q 'verification=VERIFIED' <<<"$out" && ok "redis backup created and verified in network-less Redis" || { bad "redis backup"; tail -5 <<<"$out"; }
 grep -q 'persistent_keys=3' <<<"$out" && grep -q 'job_id_counter=42' <<<"$out" && ok "manifest: 3 persistent keys (volatile excluded), counter 42" || { bad "redis manifest"; grep -E 'persistent|counter' <<<"$out"; }
 grep -qF "$RPW" <<<"$out" && bad "redis password printed" || ok "no redis password in output"
-RB="$(find "$WORK/redis" -mindepth 1 -maxdepth 1 -type d -name '20*' | head -1)"
+RB="$(find "$WORK/redis" -mindepth 1 -maxdepth 1 -type d -name '20*Z' | head -1)"
+rc=0; out="$(bash "$B/redis-backup.sh" --container "$RD" --volume "sw-bt-no-such-volume-${RUN}" --dest "$WORK/redisfail" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 && -z "$(find "$WORK/redisfail" -mindepth 1 -maxdepth 1 -name '20*Z' 2>/dev/null)" ]] && ok "redis backup failure exits non-zero and publishes nothing" || bad "redis failure handling (rc=$rc)"
 
 r FLUSHALL >/dev/null; r SET foreign-key 1 >/dev/null; r SET bull:stock-check:id 1 >/dev/null   # simulated loss + divergence
 out="$(bash "$B/redis-restore.sh" --container "$RD" --volume "$VOL" --backup "$RB" --confirm "REDIS-RESTORE-19990101" 2>&1 || true)"
