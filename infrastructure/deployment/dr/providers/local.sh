@@ -15,7 +15,7 @@
 
 _psql() { docker exec -i "$1" psql -U "$LOCAL_PG_USER" -d "$LOCAL_DB" -tAq -c "$2"; }
 
-dr_p_name() { echo "local (${LOCAL_PRIMARY_DB} -> ${LOCAL_STANDBY_DB})"; }
+dr_p_name() { echo "local (${LOCAL_PRIMARY_DB:-${LOCAL_REVERSE_DB:-?}} <-> ${LOCAL_STANDBY_DB})"; }
 
 dr_p_preflight() {
   docker inspect "$LOCAL_STANDBY_DB" >/dev/null 2>&1 || dr_die "standby container ${LOCAL_STANDBY_DB} not found"
@@ -76,10 +76,16 @@ dr_p_create_reverse_standby() {
   for i in $(seq 1 60); do [[ "$(_psql "$LOCAL_REVERSE_DB" "SELECT pg_is_in_recovery()" 2>/dev/null)" == t ]] && return 0; sleep 1; done
   dr_die "reverse standby did not start (${i}s)"
 }
+# Bytes the reverse standby has not yet replayed relative to the CURRENT primary
+# (the promoted secondary). 0 means fully caught up.
 dr_p_reverse_lag() {
-  local v
-  v="$(_psql "$LOCAL_REVERSE_DB" "SELECT CASE WHEN pg_last_wal_receive_lsn() = pg_last_wal_replay_lsn() THEN 0 ELSE -1 END" 2>/dev/null || true)"
-  [[ "$v" == 0 ]] && echo 0 || echo unknown
+  local primary_lsn replayed diff
+  primary_lsn="$(_psql "$LOCAL_STANDBY_DB" "SELECT pg_current_wal_lsn()" 2>/dev/null || true)"
+  replayed="$(_psql "$LOCAL_REVERSE_DB" "SELECT pg_last_wal_replay_lsn()" 2>/dev/null || true)"
+  [[ -n "$primary_lsn" && -n "$replayed" ]] || { echo unknown; return; }
+  diff="$(_psql "$LOCAL_STANDBY_DB" "SELECT pg_wal_lsn_diff('${primary_lsn}', '${replayed}')::bigint" 2>/dev/null || true)"
+  [[ "$diff" =~ ^-?[0-9]+$ ]] || { echo unknown; return; }
+  (( diff <= 0 )) && echo 0 || echo "$diff"
 }
 dr_p_fence_secondary() {
   local c

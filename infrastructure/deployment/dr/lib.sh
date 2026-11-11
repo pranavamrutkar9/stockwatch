@@ -8,10 +8,11 @@
 
 DR_EXECUTE=false
 DR_ALLOW_BILLABLE=false
-DR_EVIDENCE_DIR=""
+DR_EVIDENCE_DIR="${DR_EVIDENCE_DIR:-}"
 DR_LOG=""
 
-dr_now_ms() { date +%s%3N; }
+# Monotonic milliseconds (kernel boot clock) for durations; wall-clock only for display.
+dr_now_ms() { awk '{printf "%d\n", $1 * 1000}' /proc/uptime; }
 dr_ts() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 
 dr_init_evidence() { # dr_init_evidence <action>
@@ -57,10 +58,15 @@ dr_mutate() {
 }
 
 # dr_wait_http <url> <timeout_s> : waits for HTTP 200 with "status":"ok"
+# DR_HEALTH_CMD (optional) replaces curl, e.g. to probe from inside a private network.
 dr_wait_http() {
   local url="$1" deadline=$(( $(date +%s) + $2 )) body
   while (( $(date +%s) < deadline )); do
-    body="$(curl -s -m 5 "$url" 2>/dev/null || true)"
+    if [[ -n "${DR_HEALTH_CMD:-}" ]]; then
+      body="$(bash -c "$DR_HEALTH_CMD" 2>/dev/null || true)"
+    else
+      body="$(curl -s -m 5 "$url" 2>/dev/null || true)"
+    fi
     grep -q '"status":"ok"' <<<"$body" && return 0
     sleep 1
   done
