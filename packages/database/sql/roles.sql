@@ -7,6 +7,9 @@
 --   :app_verifier       SCRAM-SHA-256 verifier for stockwatch_app       ('' = keep existing)
 --   :migrator_verifier  SCRAM-SHA-256 verifier for stockwatch_migrator  ('' = keep existing)
 --   :transfer_ownership 'true' to make stockwatch_migrator own existing objects in schema public
+--   :transition_grant   'true' to also grant DML on all tables to the managing (master) user, so
+--                       sessions still connected as that user keep working until the application
+--                       has switched to stockwatch_app (remove with roles-end-transition.sql)
 --
 -- Roles:
 --   stockwatch_migrator  LOGIN; owns the schema objects; runs `prisma migrate deploy`.
@@ -15,6 +18,9 @@
 --   master user          break-glass and role management only; no application traffic.
 
 \set ON_ERROR_STOP on
+-- Never queue behind (and block) application traffic: give up after 5 s and roll back instead.
+SET LOCAL lock_timeout = '5s';
+SELECT current_user AS managing_user \gset
 
 -- 1. Roles (created only if absent; a new role requires a verifier).
 SELECT CASE WHEN :'migrator_verifier' = '' THEN
@@ -109,6 +115,11 @@ SELECT 'REVOKE ALL ON public._prisma_migrations FROM stockwatch_app'
 WHERE to_regclass('public._prisma_migrations') IS NOT NULL
   AND pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = to_regclass('public._prisma_migrations'))) = 'stockwatch_migrator' \gexec
 
+-- Optional zero-downtime transition: the running application still connects as the managing
+-- user, which loses implicit access when ownership moves to stockwatch_migrator.
+SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', :'managing_user')
+WHERE :'transition_grant' = 'true' \gexec
+
 RESET ROLE;
 
 -- 6. Report (no secrets).
@@ -120,6 +131,7 @@ FROM pg_roles r WHERE r.rolname IN ('stockwatch_app', 'stockwatch_migrator') ORD
 SELECT c.relname AS object, pg_get_userbyid(c.relowner) AS owner,
        has_table_privilege('stockwatch_app', c.oid, 'SELECT') AS app_select,
        has_table_privilege('stockwatch_app', c.oid, 'INSERT,UPDATE,DELETE') AS app_write,
-       has_table_privilege('stockwatch_app', c.oid, 'TRUNCATE') AS app_truncate
+       has_table_privilege('stockwatch_app', c.oid, 'TRUNCATE') AS app_truncate,
+       has_table_privilege(:'managing_user', c.oid, 'SELECT') AS managing_user_select
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') ORDER BY 1;

@@ -15,6 +15,12 @@ set -Eeuo pipefail
 #                 [--ca-file PATH] [--docker-network NAME] [--confirm-host HOST]
 #
 #   --apply               COMMIT instead of ROLLBACK
+#   --transition-grant    also grant DML on all tables to the managing (master) user so a running
+#                         application still connected as that user keeps working (zero downtime)
+#   --end-transition      run roles-end-transition.sql instead: remove that temporary grant
+#                         (refuses while client sessions still use the managing user)
+#   --rollback            run roles-rollback.sql instead: ownership/privileges back to the managing
+#                         user, PUBLIC database defaults restored, new roles set NOLOGIN
 #   --transfer-ownership  make stockwatch_migrator own existing public objects (one-time)
 #   --set-passwords       (re)set passwords from APP_DB_PASSWORD / MIGRATOR_DB_PASSWORD;
 #                         passwords are always required when a role does not exist yet
@@ -32,12 +38,16 @@ PROJECT_ROOT="$(cd "${DEPLOY_DIR}/../.." && pwd)"
 SQL_FILE="${PROJECT_ROOT}/packages/database/sql/roles.sql"
 PSQL_IMAGE="${PSQL_IMAGE:-postgres:16-alpine}"
 
-APPLY=false TRANSFER=false SET_PASSWORDS=false CA_FILE="" NETWORK="" CONFIRM_HOST=""
+APPLY=false TRANSFER=false SET_PASSWORDS=false TRANSITION=false FORCE_END=false MODE=apply CA_FILE="" NETWORK="" CONFIRM_HOST=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) APPLY=true ;;
     --transfer-ownership) TRANSFER=true ;;
     --set-passwords) SET_PASSWORDS=true ;;
+    --transition-grant) TRANSITION=true ;;
+    --end-transition) MODE=end-transition ;;
+    --force-end-transition) FORCE_END=true ;;
+    --rollback) MODE=rollback ;;
     --ca-file) CA_FILE="${2:?}"; shift ;;
     --docker-network) NETWORK="${2:?}"; shift ;;
     --confirm-host) CONFIRM_HOST="${2:?}"; shift ;;
@@ -47,6 +57,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "${ADMIN_DATABASE_URL:-}" ]] || { echo "ERROR: ADMIN_DATABASE_URL is required." >&2; exit 2; }
+case "$MODE" in
+  end-transition) SQL_FILE="${PROJECT_ROOT}/packages/database/sql/roles-end-transition.sql" ;;
+  rollback) SQL_FILE="${PROJECT_ROOT}/packages/database/sql/roles-rollback.sql" ;;
+esac
+if [[ "$MODE" != apply && ( "$TRANSFER" == true || "$TRANSITION" == true || "$SET_PASSWORDS" == true ) ]]; then
+  echo "ERROR: --${MODE} cannot be combined with --transfer-ownership, --transition-grant or --set-passwords." >&2; exit 2
+fi
 [[ -f "$SQL_FILE" ]] || { echo "ERROR: $SQL_FILE not found." >&2; exit 2; }
 [[ -z "$CA_FILE" || -f "$CA_FILE" ]] || { echo "ERROR: CA file not found." >&2; exit 2; }
 
@@ -116,7 +133,7 @@ fi
 echo "========================================================"
 echo "StockWatch DB roles — $( [[ $APPLY == true ]] && echo APPLY || echo 'DRY RUN (rolled back)' )"
 echo "Target: ${PGUSER}@${PGHOST}:${PGPORT}/${PGDATABASE} (sslmode=${PGSSLMODE})"
-echo "Transfer ownership: ${TRANSFER}; set passwords: ${SET_PASSWORDS}"
+echo "Mode: ${MODE}; transfer ownership: ${TRANSFER}; transition grant: ${TRANSITION}; set passwords: ${SET_PASSWORDS}"
 echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "========================================================"
 
@@ -137,6 +154,8 @@ OUTPUT="$(
       echo "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='stockwatch_migrator') THEN '' ELSE :'migrator_verifier' END AS migrator_verifier \\gset"
     fi
     echo "\\set transfer_ownership '${TRANSFER}'"
+    echo "\\set transition_grant '${TRANSITION}'"
+    echo "\\set force_end_transition '${FORCE_END}'"
     echo "BEGIN;"
     cat "$SQL_FILE"
     if [[ "$APPLY" == true ]]; then echo "COMMIT;"; else echo "ROLLBACK;"; fi
