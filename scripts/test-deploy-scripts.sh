@@ -157,6 +157,21 @@ setup; write_env "$(url stockwatch_app "evil.example.com" ap-southeast-2-bundle.
 RUN_ENV=(); run rollback.sh "$SHA_OLD"
 expect_rc "rollback: unexpected database host refused" 1 "does not point to the expected RDS host"
 
+# --- external runtime directory (CI deploys from a dedicated clone) -----------------------
+setup; RT="$SANDBOX/runtime"; mkdir -p "$RT/state"; mv "$SANDBOX/repo/.env" "$RT/.env"; printf '%s\n' "$SHA_OLD" > "$RT/state/.current_tag"
+rm -f "$SANDBOX/repo/infrastructure/deployment/.current_tag"
+RUN_ENV=(STOCKWATCH_ENV_FILE="$RT/.env" STOCKWATCH_STATE_DIR="$RT/state"); run deploy.sh "$SHA_NEW"
+expect_rc "deploy: external STOCKWATCH_ENV_FILE / STOCKWATCH_STATE_DIR" 0 "Deployment successful: $SHA_NEW"
+[[ "$(cat "$RT/state/.current_tag")" == "$SHA_NEW" && "$(cat "$RT/state/.previous_tag")" == "$SHA_OLD" && ! -e "$SANDBOX/repo/infrastructure/deployment/.current_tag" ]] \
+  && ok "deploy: tag history written to the external state dir only" || bad "deploy: state dir not used"
+grep -q -- "--project-name docker --env-file $RT/.env" "$SANDBOX/docker.log" && ok "deploy: compose project pinned to 'docker' with external env file" || bad "deploy: project/env-file not pinned"
+setup; RUN_ENV=(STOCKWATCH_STATE_DIR="$SANDBOX/does-not-exist"); run deploy.sh "$SHA_NEW"
+expect_rc "deploy: missing state dir refused" 1 "state directory .* does not exist"
+setup; RT="$SANDBOX/runtime"; mkdir -p "$RT/state"; mv "$SANDBOX/repo/.env" "$RT/.env"
+printf '%s\n' "$SHA_NEW" > "$RT/state/.current_tag"; printf '%s\n' "$SHA_OLD" > "$RT/state/.previous_tag"
+RUN_ENV=(STOCKWATCH_ENV_FILE="$RT/.env" STOCKWATCH_STATE_DIR="$RT/state"); run rollback.sh
+expect_rc "rollback: external env/state dir" 0 "Rollback successfully completed: $SHA_OLD"
+
 echo
 echo "Summary: ${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]

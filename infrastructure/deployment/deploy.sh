@@ -8,8 +8,11 @@ set -Eeuo pipefail
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${DEPLOY_DIR}/../.." && pwd)"
 COMPOSE_FILE="${PROJECT_ROOT}/infrastructure/docker/docker-compose.prod.yml"
-ENV_FILE="${PROJECT_ROOT}/.env"
-RECORD_DIR="${PROJECT_ROOT}/infrastructure/deployment"
+# Runtime configuration and deployment state can live outside the checkout (CI deploys from a
+# dedicated clone): STOCKWATCH_ENV_FILE / STOCKWATCH_STATE_DIR. Defaults keep the previous layout.
+ENV_FILE="${STOCKWATCH_ENV_FILE:-${PROJECT_ROOT}/.env}"
+RECORD_DIR="${STOCKWATCH_STATE_DIR:-${PROJECT_ROOT}/infrastructure/deployment}"
+if [[ ! -d "$RECORD_DIR" ]]; then echo "ERROR: deployment state directory ${RECORD_DIR} does not exist."; exit 1; fi
 
 # Serialize deployment and rollback operations.
 LOCK_FILE="${RECORD_DIR}/.deployment.lock"
@@ -104,7 +107,8 @@ export IMAGE_TAG
 export GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER:-pranavamrutkar9}"
 export REGISTRY="${REGISTRY:-ghcr.io}"
 
-DC=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+# Pin the Compose project so a checkout in a different directory manages the same stack.
+DC=(docker compose --project-name "${COMPOSE_PROJECT_NAME:-docker}" --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 
 echo "========================================================"
 echo "StockWatch deployment"
