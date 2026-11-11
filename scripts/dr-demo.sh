@@ -29,7 +29,10 @@ set -Eeuo pipefail
 #   disaster      destroy the whole sydney site, then run the health-check detector
 #   failover      operator step: dr-failover.sh --execute (promote, start DR app, switch front door)
 #   verify        integrity on the active database (counts, checksum, known IDs, RPO)
-#   write-check   write + read-back through the front door, and an end-to-end stock check
+#   write-check   write-read + stock-check
+#   write-read    write + read-back through the front door
+#   stock-check   end-to-end stock check on the active site (API -> queue -> worker -> database)
+#   selfcheck     prove the environment is the isolated simulation (prefix, internal network, no ports)
 #   failback      dr-failback.sh --execute (re-seed sydney from melbourne, switch back)
 #   report        measured timings of this run
 #   down          remove all demo containers and the network (evidence is kept)
@@ -318,9 +321,9 @@ PY
 }
 
 # ---------------------------------------------------------------------------------------- write-check
-cmd_write_check() {
+cmd_write_read() {
   load; [[ "$PHASE" == failed-over || "$PHASE" == failed-back || "$PHASE" == primary ]] || die "nothing is serving (phase ${PHASE})" 2
-  local sku body id got s cid; sku="DR-WRITE-${PHASE}-$(date -u +%H%M%S)"
+  local sku body id got; sku="DR-WRITE-${PHASE}-$(date -u +%H%M%S)"
   say "Write + read-back through the front door ($(front_door_host))"
   body="$(api POST /api/inventory "{\"name\":\"Written during ${PHASE}\",\"sku\":\"${sku}\",\"category\":\"dr-demo\",\"quantity\":3,\"minQuantity\":10}")"
   id="$(json 'd["id"]' <<<"$body")" || die "write failed: ${body:0:120}"
@@ -330,10 +333,38 @@ cmd_write_check() {
   info "database ${ACTIVE_DB#"${P}-"}: $(psql_c "$ACTIVE_DB" "SELECT count(*) FROM inventory_items WHERE id='${id}'") row(s)"
   [[ "$got" == "$sku" ]] || die "read-back mismatch"
   set_state DR_WRITES "${DR_WRITES:-}${DR_WRITES:+,}${sku}"
+}
+
+cmd_stock_check() {
+  load; [[ "$PHASE" == failed-over || "$PHASE" == failed-back || "$PHASE" == primary ]] || die "nothing is serving (phase ${PHASE})" 2
+  local site s cid; site="$(front_door_host)"; site="${site#backend-}"
+  say "Stock check end to end on the ${site} site: API -> BullMQ (redis-${site}) -> worker-${site} -> PostgreSQL"
+  info "checks in the database before: $(psql_c "$ACTIVE_DB" "SELECT coalesce(string_agg(status||'='||n, ' '), 'none') FROM (SELECT status::text, count(*) n FROM stock_checks GROUP BY 1 ORDER BY 1) x")"
   cid="$(api POST /api/stock-checks | json 'd["id"]')"
+  info "POST /api/stock-checks -> ${cid} (persisted as PENDING, then queued with job id = check id)"
   for _ in $(seq 1 60); do s="$(api GET "/api/stock-checks/${cid}" | json 'd["status"]')"; [[ "$s" == COMPLETED || "$s" == FAILED ]] && break; sleep 0.5; done
   info "stock check ${cid} on this site: $(api GET "/api/stock-checks/${cid}" | json '"status="+d["status"]+" totalChecked="+str(d["totalChecked"])+" lowStockCount="+str(d["lowStockCount"])')"
+  info "alerts written by worker-${site} for this check: $(psql_c "$ACTIVE_DB" "SELECT count(*) FROM stock_alerts WHERE \"stockCheckId\"='${cid}'")"
   [[ "$s" == COMPLETED ]] || die "stock check did not complete (worker/queue on this site)"
+}
+
+cmd_write_check() { cmd_write_read; cmd_stock_check; }
+
+# Proves that the environment is the isolated simulation (used by the walkthrough before any action).
+cmd_selfcheck() {
+  load; local ok=0 c n
+  [[ "$P" =~ ^sw-demo-[0-9]+$ ]] && info "OK  simulation prefix ${P}" || { info "BAD prefix ${P}"; ok=1; }
+  [[ "$(docker network inspect -f '{{.Internal}}' "$NET" 2>/dev/null)" == true ]] && info "OK  network ${NET} is internal (no route to the internet or the host's LAN)" || { info "BAD network ${NET} is not an internal network"; ok=1; }
+  n=0
+  for c in $(docker ps -a --format '{{.Names}}' | grep "^${P}-" || true); do
+    n=$((n + 1))
+    [[ -z "$(docker port "$c" 2>/dev/null)" ]] || { info "BAD ${c} publishes ports"; ok=1; }
+    [[ "$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$c")" == "${NET} " ]] || { info "BAD ${c} is attached to another network"; ok=1; }
+  done
+  info "OK  ${n} simulation containers, none publishes a port, all only on ${NET}"
+  [[ "$D" != "$ROOT"* ]] && info "OK  state directory ${D} is outside the repository" || { info "BAD state directory inside the repository"; ok=1; }
+  info "OK  production containers (stockwatch-*) are not part of this simulation and are never addressed"
+  return "$ok"
 }
 
 # ---------------------------------------------------------------------------------------- failback
@@ -384,6 +415,7 @@ cmd_down() {
 case "${1:-}" in
   up) cmd_up ;; seed) cmd_seed ;; traffic) shift; cmd_traffic "$@" ;; status) cmd_status ;;
   disaster) cmd_disaster ;; failover) cmd_failover ;; verify) cmd_verify ;; write-check) cmd_write_check ;;
+  write-read) cmd_write_read ;; stock-check) cmd_stock_check ;; selfcheck) cmd_selfcheck ;;
   failback) cmd_failback ;; report) cmd_report ;; down) cmd_down ;;
   *) sed -n '/^# Usage:/,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

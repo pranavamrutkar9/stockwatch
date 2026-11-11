@@ -5,29 +5,41 @@ Procedure, expected output and troubleshooting: [12](12-video-demonstration-runb
 ## Before recording (not on camera)
 
 ```bash
-cd ~/stockwatch && git switch main && git pull --ff-only
-scripts/dr-demo.sh status          # expect: no demo environment (exit 2); else: scripts/dr-demo.sh down
-scripts/dr-demo.sh up              # 40–90 s; keep this terminal output to scroll back on camera
+cd ~/stockwatch && git fetch && git switch docs/dr-video-demonstration && git pull --ff-only   # after merge: main
+scripts/dr-demo.sh status          # expect "no demo environment" (exit 2); else: scripts/dr-demo-walkthrough.sh --cleanup
 ```
 
-Layout: terminal **left** (commands), terminal **right** (`scripts/dr-demo.sh traffic watch`, started at 1:30), editor (VS Code or `less`) for the code walkthrough, browser tab with the production app (read-only).
-Font ≥ 16 pt; clear the screen between segments (`clear`).
+Do one complete rehearsal with the controller (`scripts/dr-demo-walkthrough.sh --tmux`, through stage 16 `DOWN`) before recording.
+
+**Screen layout (1920 × 1080):**
+
+- Terminal maximised, font ≥ 16 pt, at least ~200 columns wide. `--tmux` splits it: **left** = controller, **right** = live traffic (opens at stage 4). Without tmux: two terminal windows side by side; the controller tells you when to run `scripts/dr-demo.sh traffic watch` in the right one.
+- Browser tab: production StockWatch (Inventory, Stock checks, `/api/health`), **read-only** — never run a production stock check.
+- Editor (VS Code or `less`) with the six files of the code walkthrough already open.
+
+## Recording — one command
+
+```bash
+scripts/dr-demo-walkthrough.sh --tmux
+```
+
+The controller prints, at every stage, *What / Why / Expected*, the exact engine command and the real result, then waits. Type `DESTROY`, `PROMOTE`, `FAILBACK` and `DOWN` when asked. If something fails, it stops and explains; do not edit or hide output (see "Fallback" below).
 
 ## Timeline
 
-| Time | Requirement | Show | Say (short) |
-|---|---|---|---|
-| 0:00–0:40 | context | Browser: production StockWatch **Inventory** and **Stock checks** pages (read-only; do not run a check). Then `docs/assessment/02-system-architecture.md` diagram. | "This is StockWatch in production on EC2 with RDS in Sydney. Melbourne is designed in Terraform but not provisioned — zero-spend constraint. So the failover you'll see is a **local simulation on one host**, using the real application, real PostgreSQL streaming replication and our real failover scripts. Production is not touched." |
-| 0:40–1:30 | setup | Scroll the `up` output: two sites, standby streaming, `stockwatch_app`. Then `scripts/dr-demo.sh seed`. | "Two simulated regions on an isolated Docker network: Sydney primary, Melbourne hot standby fed by streaming replication. I create ten known records, DEMO-001 to 010, and one stock check that runs through the API, the queue and the worker. This checksum covers every seed row — it's our integrity baseline." |
-| 1:30–2:30 | **1. primary handling live traffic** | Left: `scripts/dr-demo.sh traffic start` · right: `scripts/dr-demo.sh traffic watch` · left: `scripts/dr-demo.sh status` | "A client writes an item every 200 ms through a front door — a simulated DNS record that the client resolves before every request. All requests go to Sydney and get 201. Status shows the replica streaming with zero bytes of lag, and Melbourne already holds the identical seed checksum." |
-| 2:30–3:30 | **2. disaster** | `scripts/dr-demo.sh disaster` — point at the traffic pane turning to `FAILED (000)` | "I now destroy the whole Sydney site — database and its volume, API, worker, Redis. The health checker probes every second; three consecutive failures mark the primary down — here after about 2.5 seconds. It pages the operator instead of promoting automatically: promotion is irreversible, so it's an approved step, just like the AWS runbook." |
-| 3:30–4:30 | **3a. traffic failover** | `scripts/dr-demo.sh failover` — read the step log; traffic pane turns to `backend-melbourne 201` | "The operator runs the same dr-failover.sh we'd use against AWS, with the local provider and a dated confirmation token. It checks replication lag — zero — promotes Melbourne, starts the application there, waits for it to be healthy, and only then switches the front door. Automation took <N> seconds — read it from the output; it has varied from 2.4 to 6.7 s, mostly in the promotion step. The first write acknowledged by Melbourne came <N> seconds after the disaster, which includes how long I paused before typing the command." |
-| 4:30–5:45 | **3b. data integrity on DR** | `scripts/dr-demo.sh verify` · `scripts/dr-demo.sh write-check` · `scripts/dr-demo.sh status` | "On Melbourne: all ten known records by primary key, the seed checksum matches the baseline, and every write the client saw acknowledged is present — zero lost in this run. A new write and its read-back through the API, and a stock check processed by Melbourne's worker on an empty Redis: the queue is rebuilt from PostgreSQL. Sydney's database is gone." |
-| 5:45–6:45 | failback | `scripts/dr-demo.sh failback` · `scripts/dr-demo.sh verify` | "Failback is planned: rebuild Sydney as a replica of Melbourne, wait for lag zero, stop Melbourne's writers, re-check lag, promote Sydney, start its app, switch the front door back. Writes paused for about 0.7 s in the database; clients saw about 2.6 s of errors because we switch only after the app is healthy. Checksum matches; the record written on Melbourne is present; nothing acknowledged was lost." |
-| 6:45–8:15 | **4. code walkthrough** | Editor, in this order (below) | see below |
-| 8:15–9:00 | numbers + limits | `scripts/dr-demo.sh report`, then `scripts/dr-demo.sh down` | see "Closing" |
+| Time | Stage(s) | Requirement | Show | Say (short) |
+|---|---|---|---|---|
+| 0:00–1:30 | 01, 02 | context | Stage 01 checks, press Enter: stage 02 builds and starts the simulation (≈ 40–90 s). **While it builds**, switch to the browser: production **Inventory**, **Stock checks**, an existing low-stock alert, `/api/health`; then the `02-system-architecture.md` diagram. Back to the terminal for the stage 02 result and `selfcheck`. | "This is StockWatch in production on EC2 with RDS in Sydney. For disaster recovery I've built replication, failover and failback automation, traffic switching and queue reconstruction. Because of the zero-spend constraint, Melbourne is designed in Terraform but not provisioned, so this demonstration runs **two simulated sites on one EC2 host** — real application, real PostgreSQL streaming replication, our real failover scripts — not a real multi-region AWS deployment. The self-check shows the simulation is isolated: internal network, no published ports. Production is not touched." |
+| 1:30–2:30 | 03, 04 | **1. primary handling live traffic** | Stage 03 seed output; stage 04 opens the traffic pane on the right. | "I create ten known records, DEMO-001 to 010, and one stock check through the API, the queue and the worker. This checksum covers every seed row — it's the integrity baseline. A client now writes an item every 200 ms through a front door — a simulated DNS record it resolves before every request. Every request goes to Sydney and gets 201." |
+| 2:30–3:00 | 05 | replication | Stage 05 status | "Sydney is the active primary, replication is streaming with zero bytes of lag, and the Melbourne standby already holds the identical checksum." |
+| 3:00–4:00 | 06, 07 | **2. disaster** | Type `DESTROY`. Point at the traffic pane turning to `FAILED (000)`; the detector's three failed probes; stage 07 status: `pg-sydney DESTROYED`. | "I destroy the whole simulated Sydney site — database and its volume, API, worker, Redis. The health checker probes every second and needs three consecutive failures, so one lost probe can't trigger a promotion — here it took <N> seconds. It pages the operator rather than promoting automatically: promotion is irreversible, so it is an approved step, as in the AWS runbook." |
+| 4:00–5:00 | 08, 09 | **3a. traffic failover** | Type `PROMOTE`; read the step log; traffic pane turns to `backend-melbourne 201 Created`; stage 09 status. | "The same dr-failover.sh we'd run against AWS, with the local provider: check lag — zero — promote Melbourne, start its application and worker on an empty Redis, wait for health, and only then switch the front door. Automation took <N> seconds; the first write acknowledged by Melbourne came <N> seconds after the disaster, including my pause before confirming." |
+| 5:00–6:15 | 10, 11, 12 | **3b. data integrity on DR** | Stage 10 verify, 11 write-read, 12 stock-check. | "All ten known records by primary key, the checksum matches the baseline, and every write the client saw acknowledged is present — <N> lost in this run. A new write read back through the API, and a stock check processed by Melbourne's worker: the queue is rebuilt from PostgreSQL, not from the lost Redis." |
+| 6:15–7:00 | 13, 14 | failback | Type `FAILBACK`; stage 14 verify + status (melbourne marked RETIRED). | "Failback is controlled: rebuild Sydney as a replica of Melbourne, wait for lag zero, stop Melbourne's writers, re-check, promote Sydney, start its app, switch the front door back. Database writes paused for <N> ms. The checksum still matches and the record written on Melbourne is present." |
+| 7:00–8:15 | (pause at 15) | **4. code walkthrough** | Editor, in this order (below) | see below |
+| 8:15–9:00 | 15, 16 | numbers + limits | Stage 15 report; stage 16 type `DOWN`. | see "Closing" |
 
-### Code walkthrough (6:45–8:15)
+### Code walkthrough (7:00–8:15)
 
 | File | Point at | Say |
 |---|---|---|
@@ -36,7 +48,7 @@ Font ≥ 16 pt; clear the screen between segments (`clear`).
 | `infrastructure/deployment/dr/providers/aws.sh` | `promote-read-replica` (line 73), `route53 change-resource-record-sets` (line 95), `create-db-instance-read-replica` for failback (line 105) | "The AWS provider replaces those with RDS replica promotion and a Route 53 record change. It is tested against a stub AWS CLI and a real read-only dry run; it has **not** run against a real replica, because none exists." |
 | `infrastructure/deployment/dr/dr-failback.sh` | lines 36–60: reverse standby, lag 0 twice, fence, promote | "Failback waits for zero lag before and after stopping writers — that's what makes it zero-loss." |
 | `apps/backend/src/stock-checks/stock-check-recovery.service.ts` | `StockCheckRecoveryService` (line 43) | "PostgreSQL is the source of truth. After a Redis loss — which is what a failover is for the queue — pending checks are re-enqueued from the database, with the stock-check id as the job id, so a re-enqueued check cannot produce duplicate results." |
-| `scripts/dr-demo.sh` | `seed_checksum` (line 75), traffic loop in `cmd_traffic` (line 173), detector in `cmd_disaster` (line 220) | "The checksum, the client that resolves the front door per request, and the three-strike detector. The test suite proves the checksum is real: changing one seed row makes verify fail." |
+| `scripts/dr-demo.sh` (+ `scripts/dr-demo-walkthrough.sh`) | `seed_checksum`, the traffic loop in `cmd_traffic`, the detector in `cmd_disaster`; the controller only orchestrates these commands | "The checksum, the client that resolves the front door per request, and the three-strike detector. The test suite proves the checksum is real: changing one seed row makes verify fail." |
 
 ### Closing (8:15–9:00) — say exactly this, with your measured numbers
 
@@ -46,10 +58,11 @@ Font ≥ 16 pt; clear the screen between segments (`clear`).
 ## Do not say or show
 
 - "Failover to Melbourne / to AWS ap-southeast-4" without "simulated".
+- "I switched to another AWS server." Say instead: "I simulated a primary-site failure, promoted the replicated DR database, and switched traffic through the simulated DNS front door."
 - Any production kill, restart or stock check; the production `.env`; `docker ps` of production containers with environment details.
 - RTO/RPO numbers from this document instead of your run's `report`.
 - "Zero data loss" without "in this simulation run, with zero replication lag".
 
 ## Fallback if something fails on camera
 
-`scripts/dr-demo.sh down`, then restart from "Before recording". If `verify` exits 3 (acknowledged writes lost), keep it: say "this run lost N acknowledged writes — that is asynchronous replication's RPO" and show the missing sequence numbers.
+If a stage fails, the controller stops and explains. Either fix and press `r` (retry), or `q`, then `scripts/dr-demo-walkthrough.sh --resume` (continues from the recorded phase) or `--cleanup` and start again. If `verify` exits 3 (acknowledged writes lost), keep it: say "this run lost N acknowledged writes — that is asynchronous replication's RPO" and show the missing sequence numbers.

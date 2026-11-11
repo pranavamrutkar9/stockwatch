@@ -16,8 +16,9 @@ Results from the validation run on branch `release/assessment-final`, 2026-11-11
 | Backup / restore incl. failed, interrupted (SIGTERM/SIGINT) and retention cases | `scripts/test-backup-restore.sh` | 29 / 29 |
 | Rotation verifier + IMDS script (mocked docker/aws/curl, fake passwords) | `scripts/test-security-scripts.sh` | 17 / 17 |
 | DR video demonstration end to end + failure handling (local simulation) | `scripts/test-dr-demo.sh` | 42 / 42 |
+| Interactive video controller (stub engine + real run, abort/resume/cleanup) | `scripts/test-dr-demo-walkthrough.sh` | 35 / 35 |
 | Terraform `app_host` / `database` modules, `dr-melbourne` plan | `terraform test` | 4 / 5 / 6 (offline, no apply) |
-| ShellCheck (`-S warning`) | all 26 repository shell scripts | clean |
+| ShellCheck (`-S warning`) | all 28 repository shell scripts | clean |
 
 ## Simulations — Local simulation verified
 

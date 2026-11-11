@@ -4,7 +4,41 @@
 
 Timings and ids in the "Expected" blocks below come from rehearsal 1 and differ on every run; quote only what your run prints (`scripts/dr-demo.sh report`).
 
-Tool: [`scripts/dr-demo.sh`](../../scripts/dr-demo.sh) — a step-by-step driver for scenarios S5/S6 of [`scripts/dr-simulate.sh`](../../scripts/dr-simulate.sh). Automated end-to-end test: [`scripts/test-dr-demo.sh`](../../scripts/test-dr-demo.sh) (42 checks, ≈ 1 min).
+Tool: [`scripts/dr-demo.sh`](../../scripts/dr-demo.sh) — a step-by-step driver for scenarios S5/S6 of [`scripts/dr-simulate.sh`](../../scripts/dr-simulate.sh). Automated end-to-end test: [`scripts/test-dr-demo.sh`](../../scripts/test-dr-demo.sh) (42 checks, ≈ 1 min). Interactive controller for the video: [`scripts/dr-demo-walkthrough.sh`](../../scripts/dr-demo-walkthrough.sh) (next section).
+
+## Recommended: the interactive controller
+
+```bash
+cd ~/stockwatch
+scripts/dr-demo-walkthrough.sh --tmux      # or without --tmux: open a 2nd terminal with 'scripts/dr-demo.sh traffic watch'
+```
+
+[`scripts/dr-demo-walkthrough.sh`](../../scripts/dr-demo-walkthrough.sh) runs the commands of this runbook in 16 numbered stages and **waits for you before each one**. For every stage it prints what happens, why it matters, the exact `scripts/dr-demo.sh …` command, the expected result, and then the real output and measured values of this run.
+
+| Stage | Engine command(s) | Confirmation |
+|---|---|---|
+| 01 Introduction and safety checks | — | Enter |
+| 02 Initialize the isolated environment | `up`, `selfcheck`, `status` | Enter |
+| 03 Seed ten known records, checksum baseline | `seed` | Enter |
+| 04 Start primary traffic (opens the tmux traffic pane) | `traffic start`, `traffic show 6` | Enter |
+| 05 Primary status and streaming replication | `status` | Enter |
+| 06 Simulate the primary-site disaster | `disaster` | type **DESTROY** |
+| 07 Detection and failed traffic | `traffic show 8`, `status` | Enter |
+| 08 Controlled failover | `failover` | type **PROMOTE** |
+| 09 Traffic switched to DR | `traffic show 8`, `status` | Enter |
+| 10 Integrity on the DR database | `verify` | Enter |
+| 11 New write and read-back on DR | `write-read` | Enter |
+| 12 Stock check through the DR worker | `stock-check` | Enter |
+| 13 Controlled failback | `failback` | type **FAILBACK** |
+| 14 Final integrity and status | `verify`, `status` | Enter |
+| 15 Measured RTO/RPO report | `report` | Enter |
+| 16 Cleanup | `traffic stop`, `down` | type **DOWN** (or `k` to keep) |
+
+- At every pause: `s` status, `v` verify, `t` recent traffic, `r` report (read-only repeats), `q` quit. Quitting or Ctrl-C keeps the simulation; continue with `--resume` (re-runs the isolation self-check, then continues from the recorded phase) or remove it with `--cleanup`.
+- A failed stage stops the walkthrough with an explanation and recovery steps (`r` retry, `s` status, `q` quit). It never continues on its own. A failed integrity check is printed as **INTEGRITY CHECK FAILED**; lost acknowledged writes (verify exit 3) are highlighted, not hidden.
+- Safety: the controller never calls `docker` itself and never reads the production `.env`; every action goes through `dr-demo.sh`. Before the first change, `dr-demo.sh selfcheck` must confirm the `sw-demo-<run>` prefix, an **internal** Docker network, no published ports, no container on another network, and a state directory outside the repository. Tests: [`scripts/test-dr-demo-walkthrough.sh`](../../scripts/test-dr-demo-walkthrough.sh) (35 checks: 24 against a stub engine, 11 in a real run).
+
+The sections below describe the same steps as individual commands (useful for troubleshooting or re-running one step).
 
 ## How the simulation maps to the design
 
@@ -136,7 +170,7 @@ Order matters and is enforced by the script: the front door switches **only afte
 
 - Traffic pane: `POST /api/inventory -> backend-melbourne  201 Created`.
 - `scripts/dr-demo.sh status`: `pg-sydney DESTROYED / absent`; `pg-melbourne PRIMARY (read-write) <- ACTIVE`; `backend-melbourne /api/health 200`.
-- `scripts/dr-demo.sh write-check`:
+- `scripts/dr-demo.sh write-check` (= `write-read` + `stock-check`):
 
 ```
    POST /api/inventory  -> 201, id 4a285dc9-…, sku DR-WRITE-failed-over-090757
