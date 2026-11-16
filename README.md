@@ -1,4 +1,5 @@
 # StockWatch — Inventory Monitoring & Alert System
+## Built with disaster recovery system architecture
 
 [![CI/CD Pipeline](https://github.com/pranavamrutkar9/stockwatch/actions/workflows/deploy.yml/badge.svg)](https://github.com/pranavamrutkar9/stockwatch/actions/workflows/deploy.yml)
 
